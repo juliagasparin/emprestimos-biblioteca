@@ -1,0 +1,48 @@
+# Interfaces abstratas (contratos) 
+# que dizem o que cada repositório precisa saber fazer
+from abc import ABC, abstractmethod
+from typing import Optional
+
+from dominio.usuario import Usuario
+from dominio.livro import Livro
+from dominio.exemplar import Exemplar
+from dominio.reserva import Reserva
+from dominio.emprestimo import Emprestimo
+
+
+class RepositorioUsuario(ABC):
+    @abstractmethod
+    def buscar_por_id(self, usuario_id: int) -> Optional[Usuario]:
+        ...
+
+
+class RepositorioLivro(ABC):
+    @abstractmethod
+    def buscar_por_id(self, livro_id: int) -> Optional[Livro]:
+        ...
+
+
+class RepositorioExemplar(ABC):
+    @abstractmethod
+    def buscar_por_id(self, exemplar_id: int) -> Optional[Exemplar]:
+        ...
+
+    @abstractmethod
+    def esta_disponivel(self, exemplar_id: int) -> bool:
+        ...
+
+
+class RepositorioReserva(ABC):
+    @abstractmethod
+    def buscar_por_id(self, reserva_id: int) -> Optional[Reserva]:
+        ...
+
+
+class RepositorioEmprestimo(ABC):
+    @abstractmethod
+    def salvar(self, emprestimo: Emprestimo) -> Emprestimo:
+        ...
+
+    @abstractmethod
+    def existe_emprestimo_ativo_para_exemplar(self, exemplar_id: int) -> bool:
+        ...
