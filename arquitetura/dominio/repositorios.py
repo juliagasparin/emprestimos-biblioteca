@@ -1,4 +1,4 @@
-# Interfaces abstratas (contratos) 
+# Interfaces abstratas (contratos)
 # que dizem o que cada repositório precisa saber fazer
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -35,6 +35,12 @@ class RepositorioExemplar(ABC):
 class RepositorioReserva(ABC):
     @abstractmethod
     def buscar_por_id(self, reserva_id: int) -> Optional[Reserva]:
+        ...
+
+    @abstractmethod
+    def existe_reserva_pendente_para_livro(
+        self, livro_id: int, excluir_usuario_id: int
+    ) -> bool:
         ...
 
 

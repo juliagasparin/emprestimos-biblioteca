@@ -18,6 +18,7 @@ from dominio.repositorios import (
     RepositorioEmprestimo,
 )
 
+
 class RepositorioUsuarioPostgres(RepositorioUsuario):
     def __init__(self, conexao: PgConnection):
         self._conexao = conexao
@@ -107,6 +108,24 @@ class RepositorioReservaPostgres(RepositorioReserva):
                 status=StatusReserva(linha[4]),
                 notificado_em=linha[5],
             )
+
+    def existe_reserva_pendente_para_livro(
+        self, livro_id: int, excluir_usuario_id: int
+    ) -> bool:
+        with self._conexao.cursor() as cur:
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM reservas
+                    WHERE livro_id = %s
+                      AND usuario_id <> %s
+                      AND status IN ('PENDENTE', 'AGUARDANDO_RETIRADA')
+                )
+                """,
+                (livro_id, excluir_usuario_id),
+            )
+            (existe,) = cur.fetchone()
+            return existe
 
 
 class RepositorioEmprestimoPostgres(RepositorioEmprestimo):

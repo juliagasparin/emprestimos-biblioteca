@@ -1,4 +1,4 @@
-# prova automatizada (com repositórios falsos) 
+# prova automatizada (com repositórios falsos)
 # de que a invariante da reserva é respeitada.
 from datetime import datetime
 
@@ -12,6 +12,7 @@ from dominio.repositorios import (
     RepositorioEmprestimo,
 )
 from aplicacao.criar_emprestimo import CriarEmprestimo, ExemplarIndisponivelError
+from dominio.politica_prazo import PrazoPadrao
 
 
 class RepositorioExemplarFake(RepositorioExemplar):
@@ -31,6 +32,14 @@ class RepositorioReservaFake(RepositorioReserva):
 
     def buscar_por_id(self, reserva_id):
         return self._reservas.get(reserva_id)
+
+    def existe_reserva_pendente_para_livro(self, livro_id, excluir_usuario_id):
+        return any(
+            r.livro_id == livro_id
+            and r.usuario_id != excluir_usuario_id
+            and r.esta_ativa()
+            for r in self._reservas.values()
+        )
 
 
 class RepositorioEmprestimoFake(RepositorioEmprestimo):
@@ -55,6 +64,7 @@ def _montar_caso_de_uso(exemplares, reservas):
         repo_exemplar=RepositorioExemplarFake(exemplares),
         repo_reserva=RepositorioReservaFake(reservas),
         repo_emprestimo=RepositorioEmprestimoFake(),
+        politica_prazo=PrazoPadrao(),
     )
 
 

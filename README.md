@@ -117,8 +117,8 @@ arquitetura/
 │   └── criar_emprestimo.py   # Caso de uso: orquestra repositórios + domínio
 ├── infraestrutura/
 │   └── repositorios_postgres.py  # Implementação real dos contratos, com SQL
-└── testes/
-    └── test_criar_emprestimo.py  # Prova automatizada da invariante
+└── +└── teste/
+     └── test_criar_emprestimo.py  # Prova automatizada da invariante
 ```
 
 A seta de dependência aponta sempre para dentro: `infraestrutura` e `aplicacao`
@@ -136,11 +136,56 @@ empréstimo inconsistente nunca chega a ser persistido.
 ## Rodando os testes
 
 ```bash
-cd arquitetura
-pip install pytest
-python -m pytest testes/ -v
+ cd arquitetura
+ pip install pytest
++python -m pytest teste/ -v
 ```
 
 7 testes cobrem: criação sem reserva, criação com reserva coerente, reserva de outro
 usuário, reserva de outro livro, reserva cancelada, reserva já atendida, e exemplar já
 emprestado. Validado localmente — todos passando.
+
+
+---
+
+# Etapa 4 — Design Patterns (Strategy)
+
+## Problema
+
+`CriarEmprestimo` calculava o prazo de devolução com um `prazo_padrao_dias: int`
+fixo. Qualquer regra nova de prazo viraria `if/else` acumulado dentro do caso de
+uso, misturando lógica de negócio com orquestração.
+
+## Solução: Strategy
+
+`dominio/politica_prazo.py` define a interface `PoliticaPrazo` e duas
+implementações:
+
+- `PrazoPadrao` — 14 dias fixos (comportamento original).
+- `PrazoComFilaDeReserva` — encurta para 7 dias quando existe reserva pendente de
+  outro usuário para o mesmo livro, liberando o exemplar mais rápido pra quem
+  está na fila.
+
+`CriarEmprestimo` recebe a estratégia por injeção de dependência — não sabe qual
+está em uso, só chama `calcular_dias(usuario_id, livro_id)`.
+
+**Por que "fila de reserva" e não "tipo de usuário":** o domínio não tem conceito
+de tipo/categoria de usuário hoje. Aplicar Strategy em cima de um campo que não
+existe seria especulação. A fila de reserva já é uma regra de negócio real e
+modelada desde a Etapa 2.
+
+## Dependência gerada
+
+`PrazoComFilaDeReserva` precisa perguntar se há reserva pendente para um livro —
+isso exigiu um método novo no contrato do repositório:
+
+- `dominio/repositorios.py` — `RepositorioReserva.existe_reserva_pendente_para_livro`
+  (abstrato).
+- `infraestrutura/repositorios_postgres.py` — implementação com SQL real.
+- `teste/test_criar_emprestimo.py` — fake em memória do mesmo método.
+
+## Testado localmente
+
+9 testes (os 7 da Etapa 3 + 2 novos: prazo encurta com fila, prazo padrão sem
+fila). Todos passando — confirma que a troca de estratégia não quebrou a
+invariante reserva/usuário/livro validada na Etapa 3.

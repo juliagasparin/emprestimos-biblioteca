@@ -9,6 +9,7 @@ from dominio.repositorios import (
     RepositorioEmprestimo,
 )
 from dominio.emprestimo import Emprestimo
+from dominio.politica_prazo import PoliticaPrazo
 
 class ExemplarIndisponivelError(Exception):
     """Levantada quando o exemplar não existe, não está ATIVO ou já está emprestado."""
@@ -19,12 +20,12 @@ class CriarEmprestimo:
         repo_exemplar: RepositorioExemplar,
         repo_reserva: RepositorioReserva,
         repo_emprestimo: RepositorioEmprestimo,
-        prazo_padrao_dias: int = 14,
+        politica_prazo: PoliticaPrazo,
     ):
         self._repo_exemplar = repo_exemplar
         self._repo_reserva = repo_reserva
         self._repo_emprestimo = repo_emprestimo
-        self._prazo_padrao_dias = prazo_padrao_dias
+        self._politica_prazo = politica_prazo
 
     def executar(
         self,
@@ -51,7 +52,8 @@ class CriarEmprestimo:
                 raise ValueError(f"Reserva {reserva_id} não encontrada.")
 
         emprestado_em = datetime.now()
-        prevista_devolucao_em = emprestado_em + timedelta(days=self._prazo_padrao_dias)
+        dias = self._politica_prazo.calcular_dias(usuario_id, livro_id)
+        prevista_devolucao_em = emprestado_em + timedelta(days=dias)
 
         emprestimo = Emprestimo(
             id=None,
