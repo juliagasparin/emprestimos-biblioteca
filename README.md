@@ -117,8 +117,8 @@ arquitetura/
 │   └── criar_emprestimo.py   # Caso de uso: orquestra repositórios + domínio
 ├── infraestrutura/
 │   └── repositorios_postgres.py  # Implementação real dos contratos, com SQL
-└── +└── teste/
-     └── test_criar_emprestimo.py  # Prova automatizada da invariante
+└── testes/
+    └── test_criar_emprestimo.py  # Prova automatizada da invariante
 ```
 
 A seta de dependência aponta sempre para dentro: `infraestrutura` e `aplicacao`
@@ -136,15 +136,14 @@ empréstimo inconsistente nunca chega a ser persistido.
 ## Rodando os testes
 
 ```bash
- cd arquitetura
- pip install pytest
-+python -m pytest teste/ -v
+cd arquitetura
+pip install pytest
+python -m pytest testes/ -v
 ```
 
 7 testes cobrem: criação sem reserva, criação com reserva coerente, reserva de outro
 usuário, reserva de outro livro, reserva cancelada, reserva já atendida, e exemplar já
 emprestado. Validado localmente — todos passando.
-
 
 ---
 
@@ -182,10 +181,48 @@ isso exigiu um método novo no contrato do repositório:
 - `dominio/repositorios.py` — `RepositorioReserva.existe_reserva_pendente_para_livro`
   (abstrato).
 - `infraestrutura/repositorios_postgres.py` — implementação com SQL real.
-- `teste/test_criar_emprestimo.py` — fake em memória do mesmo método.
+- `testes/test_criar_emprestimo.py` — fake em memória do mesmo método.
 
 ## Testado localmente
 
 9 testes (os 7 da Etapa 3 + 2 novos: prazo encurta com fila, prazo padrão sem
 fila). Todos passando — confirma que a troca de estratégia não quebrou a
 invariante reserva/usuário/livro validada na Etapa 3.
+
+---
+
+# Etapa 5 — TypeScript
+
+## Problema
+
+O roadmap pede pra estender um módulo em TypeScript, aplicando os mesmos conceitos
+de arquitetura já usados em Python. Escolhi `PoliticaPrazo` porque é uma peça
+pequena e isolada (Strategy da Etapa 4), boa pra provar que a lógica de domínio
+não depende da linguagem.
+
+## O que foi portado
+
+A interface `PoliticaPrazo` e a implementação `PrazoPadrao`, em `politica-prazo-ts/`
+(subpasta do mesmo repositório `emprestimos-biblioteca`). Comportamento equivalente
+ao Python: 14 dias por padrão, valor customizável via construtor.
+
+## Testado localmente
+
+2 testes com Vitest (`testes/politica-prazo.test.ts`):
+
+- retorna 14 dias por padrão;
+- retorna o valor customizado passado no construtor.
+
+```bash
+cd politica-prazo-ts
+npm test
+```
+
+Todos passando.
+
+## Limitações / próximos passos
+
+- Só `PrazoPadrao` foi portado até aqui — `PrazoComFilaDeReserva` (que depende do
+  repositório de reservas) ainda está em Python.
+- Ainda não há integração entre o módulo TS e o restante do sistema (Python); por
+  enquanto é uma prova de conceito isolada.
