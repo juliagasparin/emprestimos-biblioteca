@@ -78,7 +78,8 @@ validação fica na camada de aplicação, e não em um trigger: é uma regra do
 negócio "atender reserva", não uma regra de integridade de dado.
 
 > **Resolvida na Etapa 3** — ver seção abaixo. A regra agora é garantida em código,
-> no construtor da entidade `Emprestimo`.
+> no construtor da entidade `Emprestimo` (ver `testes/test_criar_emprestimo.py` para
+> a prova automatizada).
 
 ## Testado localmente
 
@@ -223,6 +224,58 @@ Todos passando.
 ## Limitações / próximos passos
 
 - Só `PrazoPadrao` foi portado até aqui — `PrazoComFilaDeReserva` (que depende do
-  repositório de reservas) ainda está em Python.
+  repositório de reservas) ainda está em Python. Portar essa segunda estratégia
+  exigiria replicar o contrato do repositório de reservas em TS, o que é escopo da
+  etapa de integração real entre os dois lados, não desta prova de conceito.
 - Ainda não há integração entre o módulo TS e o restante do sistema (Python); por
   enquanto é uma prova de conceito isolada.
+
+---
+
+# Etapa 6 — Microsserviços
+
+## Por que isolamos esse serviço
+
+A lógica de cálculo de prazo (`PoliticaPrazo`) foi extraída para um serviço
+independente por representar uma regra de negócio com potencial de evolução e
+escala próprios — o cálculo (7 ou 14 dias, conforme existência de reservas
+pendentes) pode mudar de complexidade (integrações externas, novas políticas por
+categoria de livro, etc.) sem exigir deploy do sistema principal.
+
+## Como funciona
+
+- **`servico-prazo/`** — microsserviço em FastAPI, expõe `POST /calcular-prazo`,
+  recebe os dados necessários e retorna o prazo (7 ou 14 dias).
+- **`infraestrutura/politica_prazo_remota.py`** — `PrazoComFilaDeReservaRemota`,
+  implementação do padrão Strategy (herda de `PoliticaPrazo`), que consulta o
+  microsserviço via `requests`.
+- **Fallback de resiliência** — chamada HTTP com timeout de 2s; se o serviço remoto
+  falhar ou não responder, o sistema recorre automaticamente à implementação local
+  (`PrazoComFilaDeReserva`), sem interromper o fluxo de empréstimo.
+
+Essa combinação garante que a separação de responsabilidades não introduza um ponto
+único de falha: o sistema principal permanece funcional mesmo com o microsserviço
+fora do ar.
+
+## Testes
+
+Testes de integração em `teste/teste_integracao_prazo_remoto.py` validam a
+comunicação real entre os dois serviços (não mockada), incluindo o cenário de
+fallback.
+
+## Como rodar localmente
+
+1. **Subir o microsserviço:**
+   ```bash
+   cd servico-prazo
+   uvicorn main:app --reload --port 8001
+   ```
+
+2. **Subir o sistema principal** (em outro terminal, na raiz do projeto):
+   ```bash
+   uvicorn main:app --reload --port 8000
+   ```
+
+3. Com os dois serviços ativos, o sistema principal consulta automaticamente
+   `http://localhost:8001/calcular-prazo`. Derrubando o `servico-prazo`, o
+   comportamento de fallback pode ser observado nos logs.
