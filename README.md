@@ -3,11 +3,11 @@
 Sistema de gestão de biblioteca construído incrementalmente como projeto de
 portfólio: parte de um schema relacional em PostgreSQL e evolui, etapa por etapa,
 até uma arquitetura com camadas desacopladas (Clean Architecture/DDD), um serviço
-extraído como microsserviço, e processamento assíncrono com cache. Cada etapa abaixo
-documenta o problema, a decisão tomada — incluindo alternativas descartadas — e a
-validação local com dados reais.
+extraído como microsserviço, processamento assíncrono com cache, e uma interface
+web em React consumindo a API. Cada etapa abaixo documenta o problema, a decisão
+tomada — incluindo alternativas descartadas — e a validação local com dados reais.
 
-**Stack:** PostgreSQL · Python · TypeScript · FastAPI · Celery · Redis · Pytest · Vitest
+**Stack:** PostgreSQL · Python · TypeScript · FastAPI · Celery · Redis · React · Vite · Pytest · Vitest
 
 ## Índice
 
@@ -17,6 +17,7 @@ validação local com dados reais.
 - [Etapa 5 — TypeScript](#etapa-5--typescript)
 - [Etapa 6 — Microsserviços](#etapa-6--microsserviços)
 - [Etapa 7 — Processamento Assíncrono e Cache](#etapa-7--processamento-assíncrono-e-cache)
+- [Etapa 8 — React (Fatia 1: Disponibilidade)](#etapa-8--react-fatia-1-disponibilidade)
 
 ## Modelo de dados
 
@@ -308,3 +309,28 @@ atual:
   Postgres ao mesmo tempo.
 - **Solução real (direção):** lock de preenchimento (`SET NX` do Redis) ou
   antecipação probabilística de expiração (*XFetch*).
+
+---
+
+# Etapa 8 — React (Fatia 1: Disponibilidade)
+
+### Problema
+Conectar o backend FastAPI existente a uma interface web em React/Vite para permitir a consulta interativa da disponibilidade de exemplares de um livro, garantindo a gestão adequada de estados da UI e a privacidade de dados sensíveis.
+
+### Solução
+- **Separação Monorepo:** Organização do projeto em pasta dedicada `frontend/` com React, TypeScript e Vite, mantendo a API isolada na pasta `api/`.
+- **Gestão de Segredos:** Credenciais de banco de dados e Redis carregadas via variáveis de ambiente (`.env`, `python-dotenv`), evitando segredos no código.
+- **Contrato de Dados Rígido:** Tipagem estrita no frontend alinhada ao payload do endpoint (`GET /disponibilidade/{livro_id}`):
+  ```typescript
+  interface Disponibilidade {
+    livro_id: number;
+    total: number;
+    disponiveis: number;
+    em_estoque: boolean;
+  }
+  ```
+- **Gestão de Estados na UI:** Implementação de `useState` manual para controlo independente de carregamento (`loading`), dados do resultado (`resultado`) e mensagens de erro (`erro`).
+- **Fetch Nativo:** Utilização do `fetch` padrão do navegador, sem bibliotecas externas de data-fetching (como TanStack Query), mantendo a simplicidade e o foco no gerenciamento manual de estados.
+
+### Testado localmente
+Consulta com ID existente (200, dados corretos renderizados), ID inexistente (404, mensagem amigável) e falha de rede com backend desligado (`Failed to fetch` capturado, sem quebrar a interface).
