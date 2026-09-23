@@ -1,3 +1,5 @@
+# dominio/repositorios.py
+
 # Interfaces abstratas (contratos)
 # que dizem o que cada repositório precisa saber fazer
 from abc import ABC, abstractmethod
@@ -31,6 +33,19 @@ class RepositorioExemplar(ABC):
     def esta_disponivel(self, exemplar_id: int) -> bool:
         ...
 
+    @abstractmethod
+    def buscar_disponibilidade(self, livro_id: int) -> dict:
+        """Retorna a contagem total e disponíveis para o livro."""
+        ...
+
+    @abstractmethod
+    def invalidar_disponibilidade(self, livro_id: int) -> None:
+        """
+        Invalida qualquer dado de disponibilidade em cache referente a este livro.
+        Implementações sem cache podem simplesmente não fazer nada (pass).
+        """
+        ...
+
 
 class RepositorioReserva(ABC):
     @abstractmethod
@@ -41,6 +56,14 @@ class RepositorioReserva(ABC):
     def existe_reserva_pendente_para_livro(
         self, livro_id: int, excluir_usuario_id: int
     ) -> bool:
+        ...
+
+    @abstractmethod
+    def buscar_aguardando_retirada(self) -> list[Reserva]:
+        ...
+
+    @abstractmethod
+    def marcar_como_expirada(self, reserva_id: int) -> None:
         ...
 
 

@@ -2,8 +2,8 @@
 # PENDENTE, AGUARDANDO_RETIRADA etc.
 # e diz se ainda está ativa.
 
-from datetime import datetime
 from enum import Enum
+from datetime import datetime, timedelta
 
 class StatusReserva(str, Enum):
     PENDENTE = "PENDENTE"
@@ -42,3 +42,10 @@ class Reserva:
             f"Reserva(id={self.id}, usuario_id={self.usuario_id}, "
             f"livro_id={self.livro_id}, status={self.status})"
         )
+    def esta_expirada(self, janela: timedelta, agora: datetime) -> bool:
+        """Verifica se a reserva está aguardando retirada e ultrapassou o prazo limite."""
+        if self.status != StatusReserva.AGUARDANDO_RETIRADA:
+            return False
+        if self.notificado_em is None:
+            return False
+        return agora >= self.notificado_em + janela

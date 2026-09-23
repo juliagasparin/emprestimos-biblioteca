@@ -11,8 +11,10 @@ from dominio.repositorios import (
 from dominio.emprestimo import Emprestimo
 from dominio.politica_prazo import PoliticaPrazo
 
+
 class ExemplarIndisponivelError(Exception):
     """Levantada quando o exemplar não existe, não está ATIVO ou já está emprestado."""
+
 
 class CriarEmprestimo:
     def __init__(
@@ -65,4 +67,9 @@ class CriarEmprestimo:
             reserva=reserva,
         )
 
-        return self._repo_emprestimo.salvar(emprestimo)
+        emprestimo_salvo = self._repo_emprestimo.salvar(emprestimo)
+
+        # Invalidação agora ocorre de forma transparente através da interface do repositório
+        self._repo_exemplar.invalidar_disponibilidade(livro_id)
+
+        return emprestimo_salvo
