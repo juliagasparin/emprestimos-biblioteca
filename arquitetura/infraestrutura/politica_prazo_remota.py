@@ -21,7 +21,7 @@ class PrazoComFilaDeReservaRemota(PoliticaPrazo):
         )
         try:
             resposta = self._cliente_http.post(
-                "http://127.0.0.1:8001/calcular-prazo",
+                SERVICO_PRAZO_URL = os.getenv("SERVICO_PRAZO_URL", "http://127.0.0.1:8001/calcular-prazo")
                 json={"tem_reserva_pendente": tem_reserva_pendente},
                 timeout=2,
             )

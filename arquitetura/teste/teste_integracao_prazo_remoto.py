@@ -18,7 +18,7 @@ class RepositorioReservaFakeParaTeste:
     def existe_reserva_pendente_para_livro(self, livro_id: int, excluir_usuario_id: int) -> bool:
         return self._tem_reserva
 
-
+@pytest.mark.integracao
 def testar_integracao_caminho_feliz():
     print("\n--- Teste 1: Caminho Feliz (Microsserviço Online) ---")
 
@@ -52,7 +52,7 @@ def testar_integracao_caminho_feliz():
 
     print("Sucesso! O sistema principal conversou com o microsserviço corretamente.")
 
-
+@pytest.mark.integracao
 def testar_integracao_fallback_indisponivel():
     print("\n--- Teste 2: Fallback (Microsserviço Indisponível) ---")
 

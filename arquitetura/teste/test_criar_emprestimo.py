@@ -25,15 +25,11 @@ class RepositorioExemplarFake(RepositorioExemplar):
     def esta_disponivel(self, exemplar_id):
         return True
 
-    def buscar_disponibilidade(self, exemplar_id):
-        # Retorna o exemplar se ele existir e estiver ativo, simulando a busca de disponibilidade
-        exemplar = self._exemplares.get(exemplar_id)
-        return exemplar if exemplar and exemplar.status == StatusExemplar.ATIVO else None
+    def buscar_disponibilidade(self, livro_id):
+        return None
 
-    def invalidar_disponibilidade(self, exemplar_id):
-        if exemplar_id in self._exemplares:
-            # Simula a invalidação alterando o status se necessário
-            pass
+    def invalidar_disponibilidade(self, livro_id):
+        pass
 
     def buscar_aguardando_retirada(self, livro_id: int):
         return []

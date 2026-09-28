@@ -1,0 +1,23 @@
+# Arquivo de variáveis de ambiente sensíveis
+.env
+
+# Dependências e builds do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Dependências e builds do Node / Frontend / TS
+node_modules/
+dist/
+build/
+.turbo/
+.cache/
+
+# Arquivos do sistema operacional
+Thumbs.db
+.DS_Store

@@ -1,7 +1,7 @@
 import os
 import time
 import redis
-import psycopg  # Importando a versão 3 do driver
+import psycopg
 
 from infraestrutura.repositorios_postgres import RepositorioExemplarPostgres
 from infraestrutura.repositorio_exemplares_cache import RepositorioExemplarCache
@@ -11,14 +11,24 @@ from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
 def rodar_teste():
     print("--- INICIANDO TESTE MANUAL DE CACHE E INVALIDAÇÃO ---")
 
-    # Conexão usando psycopg (v3)
-    conexao_pg = psycopg.connect(
-        "host=localhost port=5432 user=postgres password=postgres@ju dbname=biblioteca"
-    )
+    db_host = os.getenv("DB_HOST", "localhost")
+    db_port = os.getenv("DB_PORT", "5432")
+    db_user = os.getenv("DB_USER", "postgres")
+    db_name = os.getenv("DB_NAME", "biblioteca")
+    
+    db_password = os.getenv("DB_PASSWORD") or os.getenv("DB_PASS")
+    if not db_password:
+        raise ValueError("Erro de Configuração: A variável de ambiente DB_PASSWORD é obrigatória para este teste.")
+
+    conn_string = f"host={db_host} port={db_port} user={db_user} password={db_password} dbname={db_name}"
+    conexao_pg = psycopg.connect(conn_string)
+
+    redis_host = os.getenv("REDIS_HOST", "localhost")
+    redis_port = int(os.getenv("REDIS_PORT", 6379))
 
     redis_client = redis.Redis(
-        host="localhost",
-        port=6379,
+        host=redis_host,
+        port=redis_port,
         db=0,
         decode_responses=True
     )
@@ -31,10 +41,8 @@ def rodar_teste():
     )
 
     consultar = ConsultarDisponibilidade(repo_exemplar=repo_cache)
-
     livro_id_teste = 1
 
-    # ETAPA A: 1ª Consulta
     print("\n[1] Realizando 1ª consulta (Deve ir ao Banco):")
     inicio = time.time()
     res1 = consultar.executar(livro_id_teste)
@@ -42,7 +50,6 @@ def rodar_teste():
     print(f"Resultado: {res1}")
     print(f"Tempo decorrido: {fim - inicio:.4f}s")
 
-    # ETAPA B: 2ª Consulta
     print("\n[2] Realizando 2ª consulta seguida (Deve vir do Cache Redis):")
     inicio = time.time()
     res2 = consultar.executar(livro_id_teste)
@@ -50,12 +57,10 @@ def rodar_teste():
     print(f"Resultado: {res2}")
     print(f"Tempo decorrido: {fim - inicio:.4f}s")
 
-    # ETAPA C: Invalidação de Cache
     print("\n[3] Invalidando o cache do livro...")
     repo_cache.invalidar_disponibilidade(livro_id_teste)
     print("Cache invalidado com sucesso!")
 
-    # ETAPA D: Consulta Pós-Invalidação
     print("\n[4] Realizando consulta após invalidação (Deve ir ao Banco novamente):")
     inicio = time.time()
     res3 = consultar.executar(livro_id_teste)
