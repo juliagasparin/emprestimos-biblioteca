@@ -1,3 +1,6 @@
+import pytest
+import os
+
 from dominio.repositorios import RepositorioReserva
 from dominio.politica_prazo import PoliticaPrazo
 
@@ -19,9 +22,10 @@ class PrazoComFilaDeReservaRemota(PoliticaPrazo):
         tem_reserva_pendente = self._repo_reserva.existe_reserva_pendente_para_livro(
             livro_id, excluir_usuario_id=usuario_id
         )
+        url_servico = os.getenv("SERVICO_PRAZO_URL", "http://127.0.0.1:8001/calcular-prazo")
         try:
             resposta = self._cliente_http.post(
-                SERVICO_PRAZO_URL = os.getenv("SERVICO_PRAZO_URL", "http://127.0.0.1:8001/calcular-prazo")
+                url_servico,
                 json={"tem_reserva_pendente": tem_reserva_pendente},
                 timeout=2,
             )
