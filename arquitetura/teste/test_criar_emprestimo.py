@@ -25,6 +25,21 @@ class RepositorioExemplarFake(RepositorioExemplar):
     def esta_disponivel(self, exemplar_id):
         return True
 
+    def buscar_disponibilidade(self, exemplar_id):
+        # Retorna o exemplar se ele existir e estiver ativo, simulando a busca de disponibilidade
+        exemplar = self._exemplares.get(exemplar_id)
+        return exemplar if exemplar and exemplar.status == StatusExemplar.ATIVO else None
+
+    def invalidar_disponibilidade(self, exemplar_id):
+        if exemplar_id in self._exemplares:
+            # Simula a invalidação alterando o status se necessário
+            pass
+
+    def buscar_aguardando_retirada(self, livro_id: int):
+        return []
+
+    def marcar_como_expirada(self, reserva_id: int):
+        pass
 
 class RepositorioReservaFake(RepositorioReserva):
     def __init__(self, reservas):
@@ -40,6 +55,14 @@ class RepositorioReservaFake(RepositorioReserva):
             and r.esta_ativa()
             for r in self._reservas.values()
         )
+
+    def buscar_aguardando_retirada(self, livro_id: int):
+        return []
+
+    def marcar_como_expirada(self, reserva_id: int):
+        if reserva_id in self._reservas:
+            # simula a alteração de status se necessário
+            pass
 
 
 class RepositorioEmprestimoFake(RepositorioEmprestimo):
@@ -70,7 +93,7 @@ def _montar_caso_de_uso(exemplares, reservas):
 
 # --- Testes ---
 
-
+@pytest.mark.unitario
 def test_criar_emprestimo_sem_reserva_funciona():
     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
     caso_de_uso = _montar_caso_de_uso(exemplares=[exemplar], reservas=[])
@@ -80,7 +103,7 @@ def test_criar_emprestimo_sem_reserva_funciona():
     assert emprestimo.id is not None
     assert emprestimo.reserva_id is None
 
-
+@pytest.mark.unitario
 def test_criar_emprestimo_com_reserva_coerente_funciona():
     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
     reserva = Reserva(id=5, usuario_id=100, livro_id=10, criado_em=datetime(2026, 1, 1))
@@ -92,7 +115,7 @@ def test_criar_emprestimo_com_reserva_coerente_funciona():
 
     assert emprestimo.reserva_id == 5
 
-
+@pytest.mark.unitario
 def test_criar_emprestimo_com_reserva_de_outro_usuario_falha():
     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
     reserva = Reserva(id=5, usuario_id=999, livro_id=10, criado_em=datetime(2026, 1, 1))
@@ -101,7 +124,7 @@ def test_criar_emprestimo_com_reserva_de_outro_usuario_falha():
     with pytest.raises(ValueError, match="pertence ao usuario"):
         caso_de_uso.executar(usuario_id=100, exemplar_id=1, livro_id=10, reserva_id=5)
 
-
+@pytest.mark.unitario
 def test_criar_emprestimo_com_reserva_de_outro_livro_falha():
     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
     reserva = Reserva(id=5, usuario_id=100, livro_id=999, criado_em=datetime(2026, 1, 1))
@@ -110,7 +133,7 @@ def test_criar_emprestimo_com_reserva_de_outro_livro_falha():
     with pytest.raises(ValueError, match="é do livro"):
         caso_de_uso.executar(usuario_id=100, exemplar_id=1, livro_id=10, reserva_id=5)
 
-
+@pytest.mark.unitario
 def test_criar_emprestimo_com_reserva_cancelada_falha():
     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
     reserva = Reserva(
@@ -125,7 +148,7 @@ def test_criar_emprestimo_com_reserva_cancelada_falha():
     with pytest.raises(ValueError, match="está com status"):
         caso_de_uso.executar(usuario_id=100, exemplar_id=1, livro_id=10, reserva_id=5)
 
-
+@pytest.mark.unitario
 def test_criar_emprestimo_com_reserva_ja_atendida_falha():
     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
     reserva = Reserva(
@@ -140,7 +163,7 @@ def test_criar_emprestimo_com_reserva_ja_atendida_falha():
     with pytest.raises(ValueError, match="está com status"):
         caso_de_uso.executar(usuario_id=100, exemplar_id=1, livro_id=10, reserva_id=5)
 
-
+@pytest.mark.unitario
 def test_criar_emprestimo_exemplar_ja_emprestado_falha():
     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
     caso_de_uso = _montar_caso_de_uso(exemplares=[exemplar], reservas=[])
