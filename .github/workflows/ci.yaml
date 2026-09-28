@@ -28,4 +28,4 @@ jobs:
 
       - name: Executar Testes Unitários com Pytest
         run: |
-          pytest
+          python -m pytest
