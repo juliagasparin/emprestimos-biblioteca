@@ -1,0 +1,33 @@
+name CI Pipeline
+
+on
+  push
+    branches [ main, master ]
+  pull_request
+    branches [ main, master ]
+
+jobs
+  testes-unitarios
+    name Testes Unitários (Python)
+    runs-on ubuntu-latest
+
+    steps
+      - name Checkout do Código
+        uses actionscheckout@v4
+
+      - name Configurar Python
+        uses actionssetup-python@v5
+        with
+          python-version '3.11' # Ajuste para a versão do Python que você está usando
+          cache 'pip'          # Habilita o cache nativo do pip do GitHub Actions
+
+      - name Instalar Dependências
+        run 
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # Se você usar arquivos separados de dependência de teste, inclua aqui
+          # if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+
+      - name Executar Testes Unitários com Pytest
+        run 
+          pytest
