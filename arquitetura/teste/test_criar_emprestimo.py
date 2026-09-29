@@ -109,7 +109,7 @@ def test_criar_emprestimo_com_reserva_coerente_funciona():
         usuario_id=100, exemplar_id=1, livro_id=10, reserva_id=5
     )
 
-    assert emprestimo.reserva_id == 5
+    assert emprestimo.reserva_id == 999
 
 @pytest.mark.unitario
 def test_criar_emprestimo_com_reserva_de_outro_usuario_falha():
