@@ -18,6 +18,7 @@ tomada — incluindo alternativas descartadas — e a validação local com dado
 - [Etapa 6 — Microsserviços](#etapa-6--microsserviços)
 - [Etapa 7 — Processamento Assíncrono e Cache](#etapa-7--processamento-assíncrono-e-cache)
 - [Etapa 8 — React (Fatia 1: Disponibilidade)](#etapa-8--react-fatia-1-disponibilidade)
+- [Etapa 9 — CI/CD e Testes Automatizados](#etapa-9--cicd-e-testes-automatizados)
 
 ## Modelo de dados
 
@@ -334,3 +335,78 @@ Conectar o backend FastAPI existente a uma interface web em React/Vite para perm
 
 ### Testado localmente
 Consulta com ID existente (200, dados corretos renderizados), ID inexistente (404, mensagem amigável) e falha de rede com backend desligado (`Failed to fetch` capturado, sem quebrar a interface).
+
+---
+
+# Etapa 9 — CI/CD e Testes Automatizados
+
+[![CI Pipeline](https://github.com/juliagasparin/emprestimos-biblioteca/actions/workflows/ci.yaml/badge.svg)](https://github.com/juliagasparin/emprestimos-biblioteca/actions/workflows/ci.yaml)
+
+### Problema
+
+Os testes (`pytest` no backend, Vitest no módulo TS) existiam apenas localmente —
+nada rodava automaticamente a cada mudança, e nada impedia código quebrado de
+chegar à `main`.
+
+### Solução
+
+**Pipeline com 4 jobs** via GitHub Actions (`.github/workflows/ci.yaml`), disparado
+em `push` e `pull_request`. Três jobs rodam em paralelo; o quarto depende dos
+outros três (`needs:`), padrão fail-fast — não faz sentido subir Postgres/Redis se
+o básico já quebrou:
+
+| Job | O que valida |
+| --- | --- |
+| Testes Unitários (Python) | Regras de negócio e casos de uso via `pytest`, isolados de infraestrutura real (marker `unitario`) |
+| Testes TypeScript | Suíte Vitest do módulo `politica-prazo-ts` |
+| Build Frontend | Type-check (`tsc --noEmit`) e build (`vite build`) do React |
+| Testes de Integração e Cache | Postgres e Redis reais via `services:`, comunicação real com o `servico-prazo`, fluxo de cache-aside (`testar_cache_fluxo.py`) — só roda se os 3 jobs acima passarem |
+
+**Por que jobs separados por subprojeto, e não um workflow monolítico:** o
+repositório mistura Python, TypeScript e dois módulos Node distintos
+(`politica-prazo-ts/` e `frontend/`) com lockfiles independentes. Jobs separados
+isolam cache de dependências por subprojeto e apontam o erro direto no
+subprojeto certo, sem exigir instalar tudo para rodar qualquer parte.
+
+**Por que Postgres e Redis reais no CI, e não só testes puros de domínio:** a
+regra de conclusão do roadmap exige validação com dados reais, não mock. Testes
+puros de domínio já rodam no job unitário; o job de integração prova que o
+sistema funciona contra a mesma infraestrutura da Etapa 7 (cache) e da Etapa 6
+(microsserviço), não uma versão simulada dela.
+
+**Proteção de branch:** configurada em Branch protection rules na `main`,
+exigindo que os 4 jobs passem antes de qualquer merge. Diferença de comportamento
+por permissão: para colaboradores sem bypass o merge fica indisponível; para
+admin, o botão continua ativo mas a ação é recusada com aviso explícito de checks
+obrigatórios pendentes.
+
+### Testado localmente
+
+```bash
+# testes puros, sem infraestrutura
+pytest -m unitario
+
+# testes de integração — exige Postgres, Redis e servico-prazo no ar
+pytest -m integracao
+
+# módulo TypeScript
+cd politica-prazo-ts && npm test
+
+# frontend — type-check + build
+cd frontend && npm run build
+```
+
+Validado no GitHub Actions: os 4 jobs rodando verdes em conjunto; falha proposital
+introduzida em PR (asserção alterada) derrubou apenas o job correspondente,
+bloqueou o merge, e o ciclo voltou a verde após a correção — sem intervenção
+manual na regra de proteção.
+
+## ⚠️ Limitações Conhecidas
+
+- **Frontend sem testes automatizados de componente:** o job de CI valida apenas
+  type-check e build do React, sem testes unitários de UI (ex: Vitest + Testing
+  Library). Os três cenários manuais validados na Etapa 8 (sucesso, 404, falha de
+  rede) ainda não têm cobertura automatizada.
+- **Sem testes end-to-end:** o pipeline valida camadas isoladamente (backend,
+  cada módulo, integração de infraestrutura), não o fluxo completo
+  usuário-navegador-API-banco.
