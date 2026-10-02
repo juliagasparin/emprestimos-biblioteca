@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from dominio.reserva import Reserva
+from arquitetura.dominio.reserva import Reserva
 
 
 class RepositorioReservas(Protocol):

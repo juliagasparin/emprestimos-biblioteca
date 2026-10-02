@@ -36,19 +36,48 @@ tomada — incluindo alternativas descartadas — e a validação local com dado
 
 ## Como Rodar (Geral)
 
-**Pré-requisitos:** PostgreSQL e Redis disponíveis (local ou em contêiner) e um
-arquivo `.env` na raiz com as variáveis de ambiente.
+**Pré-requisitos:** Python, Node.js, PostgreSQL e Redis (porta 6379).
 
-```bash
-# Microsserviço de prazo
-cd servico-prazo && uvicorn main:app --reload --port 8001
+1. **Banco de dados:**
 
-# API principal (na raiz do repositório)
-uvicorn api.main:app --reload --port 8000
+   ```bash
+   psql -U postgres -c "CREATE DATABASE emprestimos;"
+   psql -U postgres -d emprestimos -f biblioteca_schema.sql
+   ```
 
-# Frontend
-cd frontend && npm install && npm run dev
-```
+   No Windows, se `psql` não for reconhecido, veja [Ajustes de ambiente (Windows)](#ajustes-de-ambiente-windows).
+
+2. **Variáveis de ambiente:** copie `.env.example` para `.env` e ajuste usuário e senha.
+   `DB_NAME` deve ser o nome do banco criado no passo anterior (`emprestimos`).
+
+3. **Dependências Python:**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Redis:** deve estar rodando na porta 6379. No Windows, uma opção é o WSL:
+
+   ```bash
+   sudo service redis-server start
+   redis-cli ping   # deve responder PONG
+   ```
+
+   Em Linux/macOS ou contêiner, basta que a porta 6379 esteja acessível. No PowerShell,
+   `Test-NetConnection localhost -Port 6379` também confirma.
+
+5. **Serviços:**
+
+   ```bash
+   # Microsserviço de prazo
+   cd servico-prazo && uvicorn main:app --reload --port 8001
+
+   # API principal (na raiz do repositório)
+   uvicorn api.main:app --reload --port 8000
+
+   # Frontend
+   cd frontend && npm install && npm run dev
+   ```
 
 # Etapa 2 — Modelo de Dados
 
@@ -134,7 +163,7 @@ duplicada, empréstimo de exemplar já emprestado e devolução retroativa bloqu
 o cenário da limitação conhecida foi reproduzido de propósito e confirmou a lacuna.
 
 ```bash
-psql -U seu_usuario -d seu_banco -f biblioteca_schema.sql
+psql -U postgres -d emprestimos -f biblioteca_schema.sql
 ```
 
 ---
@@ -355,11 +384,23 @@ invalidado ficaria desatualizado indefinidamente.
 (Redis) → empréstimo dispara invalidação (chave removida) → consulta seguinte volta
 a ser miss, confirmando dado atualizado em vez de cache velho.
 
-```bash
-# Parte 1: worker + agendador (Celery Beat)
-celery -A celery_app worker --beat --loglevel=info --pool=solo
+Parte 1: worker + agendador (Celery Beat), a partir da raiz do repositório. O
+`PYTHONPATH` precisa apontar para `arquitetura/`, onde ficam `celery_app.py` e os
+módulos de domínio.
 
-# Parte 2: fluxo completo do cache
+```powershell
+# Windows (PowerShell)
+$env:PYTHONPATH="arquitetura"; python -m celery -A celery_app worker --beat --pool=solo --loglevel=info
+```
+
+```bash
+# Linux/macOS
+PYTHONPATH=arquitetura python -m celery -A celery_app worker --beat --loglevel=info
+```
+
+Parte 2: fluxo completo do cache.
+
+```bash
 python testar_cache_fluxo.py
 ```
 
@@ -385,6 +426,14 @@ variáveis de ambiente do terminal em CP1252. Resolvido migrando para `psycopg` 
 Mesma categoria de problema da Etapa 1 (barra invertida no `\i` do psql): ambiente
 Windows exige atenção redobrada a encoding em qualquer ponto de integração com
 texto/credenciais.
+
+**`psql` fora do PATH (PowerShell):** o instalador do PostgreSQL não adiciona o
+`psql` ao PATH. Chame pelo caminho completo, com o operador `&`, ou adicione a pasta
+`bin` ao PATH do Windows:
+
+```powershell
+& "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -d emprestimos -f biblioteca_schema.sql
+```
 
 ### ⚠️ Limitações Conhecidas (Concorrência e Cache)
 
