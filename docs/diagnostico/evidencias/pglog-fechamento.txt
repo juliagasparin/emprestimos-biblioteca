@@ -1,0 +1,49 @@
+﻿2026-10-20 09:27:32 -03 LOG:  comando: SELECT 'MARCADOR_1_chamada_sem_chave';
+
+2026-10-20 09:27:34 -03 LOG:  comando: BEGIN
+
+2026-10-20 09:27:34 -03 LOG:  executar <unnamed>: 
+
+	                SELECT 
+
+	                    COUNT(*) AS total,
+
+	                    COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+
+	                FROM exemplares
+
+	                WHERE livro_id = $1;
+
+	                
+
+2026-10-20 09:27:34 -03 DETALHE:  Parameters: $1 = '1'
+
+2026-10-20 09:27:37 -03 LOG:  comando: SELECT 'MARCADOR_2_chamada_com_chave';
+
+2026-10-20 09:27:44 -03 LOG:  comando: SELECT 'MARCADOR_3_depois_do_DEL';
+
+2026-10-20 09:27:44 -03 LOG:  comando: BEGIN
+
+2026-10-20 09:27:44 -03 LOG:  executar <unnamed>: 
+
+	                SELECT 
+
+	                    COUNT(*) AS total,
+
+	                    COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+
+	                FROM exemplares
+
+	                WHERE livro_id = $1;
+
+	                
+
+2026-10-20 09:27:44 -03 DETALHE:  Parameters: $1 = '1'
+
+2026-10-20 09:27:47 -03 LOG:  comando: SELECT 'MARCADOR_4_fim';
+
+2026-10-20 09:28:47 -03 LOG:  checkpoint starting: time
+
+2026-10-20 09:28:47 -03 LOG:  checkpoint complete: wrote 2 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.226 s, sync=0.011 s, total=0.270 s; sync files=3, longest=0.005 s, average=0.004 s; distance=0 kB, estimate=2592 kB; lsn=0/52D0198, redo lsn=0/52D0140
+
+

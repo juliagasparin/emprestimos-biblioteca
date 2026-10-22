@@ -1,0 +1,465 @@
+﻿**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20261015190920
+Nome de Usuário: DESKTOP-G6SH7L9\julia
+Executar como Usuário: DESKTOP-G6SH7L9\julia
+Nome da Configuração: 
+Computador: DESKTOP-G6SH7L9 (Microsoft Windows NT 10.0.26300.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID do Processo: 14704
+PSVersion: 5.1.26100.9711
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9711
+BuildVersion: 10.0.26100.9711
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é docs\diagnostico\evidencias\cenario-1-completo.txt
+PS C:\Git\emprestimos-biblioteca> #"===== PARTE 0: Ambiente =====
+PS C:\Git\emprestimos-biblioteca> Get-Date
+
+quinta-feira, 15 de outubro de 2026 19:09:50
+
+
+PS C:\Git\emprestimos-biblioteca> git rev-parse --short HEAD
+
+PS C:\Git\emprestimos-biblioteca> git status --short
+
+PS C:\Git\emprestimos-biblioteca> python --version
+
+PS C:\Git\emprestimos-biblioteca> $psql = "C:\Program Files\PostgreSQL\18\bin\psql.exe"
+PS C:\Git\emprestimos-biblioteca> "PGPASSWORD definida na sessao: $([bool]$env:PGPASSWORD)"
+PGPASSWORD definida na sessao: True
+PS C:\Git\emprestimos-biblioteca> "DB_PASSWORD definida na sessao: $([bool]$env:DB_PASSWORD)"
+DB_PASSWORD definida na sessao: False
+PS C:\Git\emprestimos-biblioteca> Select-String -Path .env -Pattern "^DB_PASSWORD=" | ForEach-Object { "{0}:{1}: DB_PASSWORD presente no .env (valor oculto)" -f $_.Filename,$_.LineNumber } | Out-Host
+.env:3: DB_PASSWORD presente no .env (valor oculto)
+PS C:\Git\emprestimos-biblioteca> function Ver-Redis {
+@'
+import redis
+r = redis.Redis(host='localhost', port=6379, db=0)
+k = 'disponibilidade:livro:1'
+print('DBSIZE', r.dbsize())
+print('CHAVES disponibilidade:*', [x.decode() for x in r.keys('disponibilidade:*')])
+print('TTL', k, r.ttl(k))
+v = r.get(k)
+print('VALOR', k, v.decode() if v else None)
+'@ | python - | Out-Host
+}
+PS C:\Git\emprestimos-biblioteca> function Esperar-Porta($porta) {
+    for ($t = 0; $t -lt 30; $t++) {
+        if (Get-NetTCPConnection -LocalPort $porta -State Listen -ErrorAction SilentlyContinue) { "porta $porta escutando apos $t s"; return }
+        Start-Sleep 1
+    }
+    "porta $porta NAO subiu em 30 s"
+}
+PS C:\Git\emprestimos-biblioteca> # PARTE 1: Preparando o banco de dados biblioteca_diag
+PS C:\Git\emprestimos-biblioteca> & $psql -U postgres -d biblioteca_diag -c "\dt" 2>&1 | Out-String | Write-Host
+              List of tables
+ Esquema |    Nome     |  Tipo  |   Dono   
+---------+-------------+--------+----------
+ public  | autores     | tabela | postgres
+ public  | emprestimos | tabela | postgres
+ public  | exemplares  | tabela | postgres
+ public  | livro_autor | tabela | postgres
+ public  | livros      | tabela | postgres
+ public  | reservas    | tabela | postgres
+ public  | usuarios    | tabela | postgres
+(7 linhas)
+PS C:\Git\emprestimos-biblioteca> # Cadastro de 1 livro com 2 exemplares e nenhum emprestimo
+PS C:\Git\emprestimos-biblioteca> & $psql -U postgres -d biblioteca_diag -c "INSERT INTO livros (id, titulo, isbn, ano_publicacao) VALUES (1, 'Dom Casmurro', '9788535914849', 1899) ON CONFLICT (id) DO NOTHING; INSERT INTO exemplares (id, livro_id, codigo_patrimonio, status) VALUES (1, 1, 'PAT-001', 'ATIVO'), (2, 1, 'PAT-002', 'ATIVO') ON CONFLICT (id) DO NOTHING;" 2>&1 | Out-String | Write-Host
+INSERT 0 1
+INSERT 0 2
+PS C:\Git\emprestimos-biblioteca> # Confirma se foi salvo na tabela exemplares e a contagem de empréstimos
+PS C:\Git\emprestimos-biblioteca> & $psql -U postgres -d biblioteca_diag -c "SELECT id, livro_id, status FROM exemplares;" 2>&1 | Out-String | Write-Host
+ id | livro_id | status 
+----+----------+--------
+  1 |        1 | ATIVO
+  2 |        1 | ATIVO
+(2 linhas)
+PS C:\Git\emprestimos-biblioteca> & $psql -U postgres -d biblioteca_diag -c "SELECT COUNT(*) AS emprestimos FROM emprestimos;" 2>&1 | Out-String | Write-Host
+ emprestimos 
+-------------
+           0
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # Contagem de referência correta diretamente no banco de dados
+PS C:\Git\emprestimos-biblioteca> & $psql -U postgres -d biblioteca_diag -c "SELECT e.livro_id, COUNT(e.id) AS disponiveis FROM exemplares e WHERE e.livro_id = 1 AND e.status = 'ATIVO' AND NOT EXISTS (SELECT 1 FROM emprestimos emp WHERE emp.exemplar_id = e.id AND emp.devolvido_em IS NULL) GROUP BY e.livro_id;" 2>&1 | Out-String | Write-Host
+ livro_id | disponiveis 
+----------+-------------
+        1 |           2
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # ===== PARTE 2: CHECAGEM INICIAL DO REDIS =====
+PS C:\Git\emprestimos-biblioteca> # estado inicial do Redis sem alterar nada
+PS C:\Git\emprestimos-biblioteca> Ver-Redis
+DBSIZE 3
+CHAVES disponibilidade:* []
+TTL disponibilidade:livro:1 -2
+VALOR disponibilidade:livro:1 None
+PS C:\Git\emprestimos-biblioteca> # chaves existentes no Redis
+PS C:\Git\emprestimos-biblioteca> @'
+import redis
+r = redis.Redis(host='localhost', port=6379, db=0)
+print([x.decode() for x in r.keys('*')])
+'@ | python - | Out-Host
+['_kombu.binding.celery', '_kombu.binding.celery.pidbox', '_kombu.binding.celeryev']
+PS C:\Git\emprestimos-biblioteca> # ===== PARTE 3: TESTE DA API SEM A VARIÁVEL DB_NAME =====
+PS C:\Git\emprestimos-biblioteca> # Verificar se variável DB_NAME está vazia e se a porta 8000 está livre
+PS C:\Git\emprestimos-biblioteca> "DB_NAME=[$env:DB_NAME]"
+DB_NAME=[]
+PS C:\Git\emprestimos-biblioteca> Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Out-Host
+PS C:\Git\emprestimos-biblioteca> # Localiza onde a API faz leitura de variáveis de ambiente no código
+PS C:\Git\emprestimos-biblioteca> Select-String -Path api\main.py -Pattern "getenv|environ|load_dotenv" | ForEach-Object { "{0}:{1}: {2}" -f $_.Filename,$_.LineNumber,$_.Line.Trim() } | Out-Host
+main.py:4: from dotenv import load_dotenv
+main.py:8: load_dotenv(ROOT_DIR / ".env")
+main.py:32: host=os.getenv("REDIS_HOST", "localhost"),
+main.py:33: port=int(os.getenv("REDIS_PORT", 6379)),
+main.py:40: dbname=os.getenv("DB_NAME"),
+main.py:41: user=os.getenv("DB_USER"),
+main.py:42: password=os.getenv("DB_PASSWORD"),
+main.py:43: host=os.getenv("DB_HOST", "localhost"),
+main.py:44: port=os.getenv("DB_PORT", "5432")
+PS C:\Git\emprestimos-biblioteca> # variáveis de conexão configuradas no arquivo .env
+PS C:\Git\emprestimos-biblioteca> Select-String -Path .env -Pattern "^(DB_(NAME|HOST|PORT|USER)|REDIS_(HOST|PORT))=" | ForEach-Object { "{0}:{1}: {2}" -f $_.Filename,$_.LineNumber,$_.Line.Trim() } | Out-Host
+.env:1: DB_NAME=emprestimo
+.env:2: DB_USER=postgres
+.env:4: DB_HOST=localhost
+.env:5: DB_PORT=5432
+.env:6: REDIS_HOST=localhost
+.env:7: REDIS_PORT=6379
+PS C:\Git\emprestimos-biblioteca> # Consulta a quantidade de exemplares no banco padrão do .env (emprestimo)
+PS C:\Git\emprestimos-biblioteca> & $psql -U postgres -d emprestimo -c "SELECT COUNT(*) AS total FROM exemplares WHERE livro_id = 1;" 2>&1 | Out-String | Write-Host
+ total 
+-------
+     1
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # Sobe a API sem definir DB_NAME na sessão e aguarda a porta 8000 responder
+PS C:\Git\emprestimos-biblioteca> $api = Start-Process python -ArgumentList "-m","uvicorn","api.main:app" -RedirectStandardOutput docs\diagnostico\evidencias\api-completo-sem-dbname.out.log -RedirectStandardError docs\diagnostico\evidencias\api-completo-sem-dbname.err.log -NoNewWindow -PassThru
+PS C:\Git\emprestimos-biblioteca> Esperar-Porta 8000
+porta 8000 escutando apos 1 s
+PS C:\Git\emprestimos-biblioteca> "API PID: $($api.Id)"
+API PID: 14472
+PS C:\Git\emprestimos-biblioteca> # Verifica o Redis antes e depois de chamar a rota de disponibilidade do livro 1
+PS C:\Git\emprestimos-biblioteca> Ver-Redis
+DBSIZE 3
+CHAVES disponibilidade:* []
+TTL disponibilidade:livro:1 -2
+VALOR disponibilidade:livro:1 None
+PS C:\Git\emprestimos-biblioteca> curl.exe -s http://127.0.0.1:8000/disponibilidade/1 | Out-Host
+{"livro_id":1,"total":1,"disponiveis":0,"em_estoque":false}
+PS C:\Git\emprestimos-biblioteca> ""
+
+PS C:\Git\emprestimos-biblioteca> Ver-Redis
+DBSIZE 4
+CHAVES disponibilidade:* ['disponibilidade:livro:1']
+TTL disponibilidade:livro:1 58
+VALOR disponibilidade:livro:1 {"livro_id": 1, "total": 1, "disponiveis": 0, "em_estoque": false}
+PS C:\Git\emprestimos-biblioteca> Stop-Process -Id $api.Id -ErrorAction SilentlyContinue
+PS C:\Git\emprestimos-biblioteca> Stop-Transcript
+**********************
+Fim da transcrição do Windows PowerShell
+Hora de término: 20261015203036
+**********************
+**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20261016135813
+Nome de Usuário: DESKTOP-G6SH7L9\julia
+Executar como Usuário: DESKTOP-G6SH7L9\julia
+Nome da Configuração: 
+Computador: DESKTOP-G6SH7L9 (Microsoft Windows NT 10.0.26300.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID do Processo: 14704
+PSVersion: 5.1.26100.9711
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9711
+BuildVersion: 10.0.26100.9711
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é docs\diagnostico\evidencias\cenario-1-completo.txt
+PS C:\Git\emprestimos-biblioteca> # ===== PARTE 4: Esperar o TTL de 60 s (sem limpar o Redis) =====
+PS C:\Git\emprestimos-biblioteca> Start-Sleep 65
+PS C:\Git\emprestimos-biblioteca> Ver-Redis
+DBSIZE 3
+CHAVES disponibilidade:* []
+TTL disponibilidade:livro:1 -2
+VALOR disponibilidade:livro:1 None
+PS C:\Git\emprestimos-biblioteca> # ===== PARTE 5: TESTE DA API COM DB_NAME=biblioteca_diag =====
+PS C:\Git\emprestimos-biblioteca> # Encerra o processo anterior da API e libera a porta 8000
+PS C:\Git\emprestimos-biblioteca> Stop-Process -Id $api.Id
+Stop-Process : Não é possível localizar um processo com o identificador de processo 14472.
+No linha:1 caractere:1
++ Stop-Process -Id $api.Id
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (14472:Int32) [Stop-Process], ProcessCommandException
+    + FullyQualifiedErrorId : NoProcessFoundForGivenId,Microsoft.PowerShell.Commands.StopProcessCommand
+Stop-Process : Não é possível localizar um processo com o
+identificador de processo 14472.
+No linha:1 caractere:1
++ Stop-Process -Id $api.Id
++ ~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (14472:Int32) [Stop-Proc
+   ess], ProcessCommandException
+    + FullyQualifiedErrorId : NoProcessFoundForGivenId,Microsoft.Power
+   Shell.Commands.StopProcessCommand
+
+PS C:\Git\emprestimos-biblioteca> Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue | Out-Host
+PS C:\Git\emprestimos-biblioteca> # O processo da API anterior (PID 14472) já havia sido encerrado com o fechamento da sessão anterior do terminal. A verificação da porta 8000 via Get-NetTCPConnection confirmou que não há nenhum serviço escutando na porta.
+PS C:\Git\emprestimos-biblioteca> # Definir DB_NAME na sessão atual
+PS C:\Git\emprestimos-biblioteca> $env:DB_NAME = "biblioteca_diag"
+PS C:\Git\emprestimos-biblioteca> "DB_NAME=[$env:DB_NAME]"
+DB_NAME=[biblioteca_diag]
+PS C:\Git\emprestimos-biblioteca> # Subir a nova API apontando para o biblioteca_diag
+PS C:\Git\emprestimos-biblioteca> $api = Start-Process python -ArgumentList "-m","uvicorn","api.main:app" -RedirectStandardOutput docs\diagnostico\evidencias\api-completo-com-dbname.out.log -RedirectStandardError docs\diagnostico\evidencias\api-completo-com-dbname.err.log -NoNewWindow -PassThru
+PS C:\Git\emprestimos-biblioteca> Esperar-Porta 8000
+porta 8000 escutando apos 0 s
+PS C:\Git\emprestimos-biblioteca> "API PID: $($api.Id)"
+API PID: 18092
+PS C:\Git\emprestimos-biblioteca> # Testar o Redis antes e depois do curl
+PS C:\Git\emprestimos-biblioteca> Ver-Redis
+DBSIZE 3
+CHAVES disponibilidade:* []
+TTL disponibilidade:livro:1 -2
+VALOR disponibilidade:livro:1 None
+PS C:\Git\emprestimos-biblioteca> curl.exe -s http://127.0.0.1:8000/disponibilidade/1 | Out-Host
+{"livro_id":1,"total":2,"disponiveis":0,"em_estoque":false}
+PS C:\Git\emprestimos-biblioteca> ""
+
+PS C:\Git\emprestimos-biblioteca> Ver-Redis
+DBSIZE 4
+CHAVES disponibilidade:* ['disponibilidade:livro:1']
+TTL disponibilidade:livro:1 51
+VALOR disponibilidade:livro:1 {"livro_id": 1, "total": 2, "disponiveis": 0, "em_estoque": false}
+PS C:\Git\emprestimos-biblioteca> # 5.a: PROVA DE CONEXÃO DIRETA DA API AO BANCO
+PS C:\Git\emprestimos-biblioteca> & $psql -U postgres -d postgres -c "SELECT pid, datname, usename, application_name, client_addr, state, backend_start FROM pg_stat_activity WHERE datname IS NOT NULL ORDER BY backend_start;" 2>&1 | Out-String | Write-Host
+ pid  | datname  | usename  | application_name | client_addr | state  |         backend_start         
+------+----------+----------+------------------+-------------+--------+-------------------------------
+ 7860 | postgres | postgres | psql             | ::1         | active | 2026-10-16 14:29:39.359422-03
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # ===== PARTE 6: CONSULTA NO FRONTEND =====
+PS C:\Git\emprestimos-biblioteca> # Lista as rotas disponíveis no OpenAPI
+PS C:\Git\emprestimos-biblioteca> curl.exe -s http://127.0.0.1:8000/openapi.json | python -c "import sys,json; print(list(json.load(sys.stdin)['paths']))" | Out-Host
+['/disponibilidade/{livro_id}']
+PS C:\Git\emprestimos-biblioteca> # Localiza onde a rota de disponibilidade é chamada no Frontend
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -File -Include *.js,*.jsx,*.ts,*.tsx | Where-Object { $_.FullName -notmatch "node_modules|\\dist\\" } | Select-String -Pattern "disponibilidade" | ForEach-Object { "{0}:{1}: {2}" -f $_.Path,$_.LineNumber,$_.Line.Trim() } | Out-Host
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:5: interface DisponibilidadeResultado {
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:15: const [resultado, setResultado] = useState<DisponibilidadeResultado | null>(null)
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:19: // Função para buscar a disponibilidade na API FastAPI
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:20: const buscarDisponibilidade = async () => {
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:28: const response = await fetch(`http://localhost:8000/disponibilidade/${livroIdInput}`)
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:38: const data: DisponibilidadeResultado = await response.json()
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:49: <h2>Consulta de Disponibilidade de Livro</h2>
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:61: onClick={buscarDisponibilidade}
+PS C:\Git\emprestimos-biblioteca> # Confirma se o Frontend está ativo na porta 5173
+PS C:\Git\emprestimos-biblioteca> "porta 5173 escutando: $([bool](Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue))"
+porta 5173 escutando: False
+PS C:\Git\emprestimos-biblioteca> if (-not (Test-Path frontend\node_modules)) { npm.cmd install --prefix frontend }
+PS C:\Git\emprestimos-biblioteca> $fe = Start-Process npm.cmd -ArgumentList "run","dev" -WorkingDirectory frontend `
+  -RedirectStandardOutput docs\diagnostico\evidencias\frontend.out.log `
+  -RedirectStandardError docs\diagnostico\evidencias\frontend.err.log `
+  -NoNewWindow -PassThru
+PS C:\Git\emprestimos-biblioteca> Esperar-Porta 5173
+porta 5173 escutando apos 2 s
+PS C:\Git\emprestimos-biblioteca> Stop-Transcript
+**********************
+Fim da transcrição do Windows PowerShell
+Hora de término: 20261016151354
+**********************
+**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20261019084233
+Nome de Usuário: DESKTOP-G6SH7L9\julia
+Executar como Usuário: DESKTOP-G6SH7L9\julia
+Nome da Configuração: 
+Computador: DESKTOP-G6SH7L9 (Microsoft Windows NT 10.0.26300.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID do Processo: 9836
+PSVersion: 5.1.26100.9711
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9711
+BuildVersion: 10.0.26100.9711
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é docs\diagnostico\evidencias\cenario-1-completo.txt
+PS C:\Git\emprestimos-biblioteca> # ===== RETOMADA: PARTE 6 REFEITA (a execução anterior foi interrompida por travamento do console) =====
+PS C:\Git\emprestimos-biblioteca> # ===== PARTE 6: CONSULTA NO FRONTEND =====
+PS C:\Git\emprestimos-biblioteca> # Lista as rotas disponíveis no OpenAPI e onde a rota é chamada pelo Frontend
+PS C:\Git\emprestimos-biblioteca> curl.exe -s http://127.0.0.1:8000/openapi.json | python -c "import sys,json; print(list(json.load(sys.stdin)['paths']))" | Out-Host
+['/disponibilidade/{livro_id}']
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -File -Include *.js,*.jsx,*.ts,*.tsx | Where-Object { $_.FullName -notmatch "node_modules|\\dist\\" } | Select-String -Pattern "disponibilidade" | ForEach-Object { "{0}:{1}: {2}" -f $_.Path,$_.LineNumber,$_.Line.Trim() } | Out-Host
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:5: interface DisponibilidadeResultado {
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:15: const [resultado, setResultado] = useState<DisponibilidadeResultado | null>(null)
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:19: // Função para buscar a disponibilidade na API FastAPI
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:20: const buscarDisponibilidade = async () => {
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:28: const response = await fetch(`http://localhost:8000/disponibilidade/${livroIdInput}`)
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:38: const data: DisponibilidadeResultado = await response.json()
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:49: <h2>Consulta de Disponibilidade de Livro</h2>
+C:\Git\emprestimos-biblioteca\frontend\src\App.tsx:61: onClick={buscarDisponibilidade}
+PS C:\Git\emprestimos-biblioteca> # Sobe o frontend em uma janela PRÓPRIA (não disputa o teclado com este terminal).
+PS C:\Git\emprestimos-biblioteca> Start-Process cmd.exe -ArgumentList "/k","cd /d C:\Git\emprestimos-biblioteca\frontend && npm run dev"
+PS C:\Git\emprestimos-biblioteca> Esperar-Porta 5173
+porta 5173 escutando apos 0 s
+PS C:\Git\emprestimos-biblioteca> "porta 5173 escutando: $([bool](Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue))"
+porta 5173 escutando: True
+PS C:\Git\emprestimos-biblioteca> # >>> PAUSA 1
+PS C:\Git\emprestimos-biblioteca> Read-Host "Na pagina: livro 1 > consultar. Depois volte e aperte ENTER (maximo 60 s)"
+
+PS C:\Git\emprestimos-biblioteca> # Inspeciona o Redis logo após o teste na interface 
+PS C:\Git\emprestimos-biblioteca> Ver-Redis
+DBSIZE 4
+CHAVES disponibilidade:* ['disponibilidade:livro:1']
+TTL disponibilidade:livro:1 53
+VALOR disponibilidade:livro:1 {"livro_id": 1, "total": 2, "disponiveis": 0, "em_estoque": false}
+PS C:\Git\emprestimos-biblioteca> # >>> PAUSA 2: print
+PS C:\Git\emprestimos-biblioteca> Read-Host "Abra http://localhost:5173/ nesta execucao (DB_NAME=biblioteca_diag), abra o livro 1 e digite EXATAMENTE o que aparece na tela (ex.: Total=..; Disponiveis=..; Em estoque=..)"
+Total=2; Disponiveis=0; Em estoque=Não
+PS C:\Git\emprestimos-biblioteca>  # ===== PARTE 7: ANÁLISE DO CÓDIGO FONTE =====
+PS C:\Git\emprestimos-biblioteca> # Versão do Powershell
+PS C:\Git\emprestimos-biblioteca> $PSVersionTable.PSVersion | Out-Host
+
+Major  Minor  Build  Revision
+-----  -----  -----  --------
+5      1      26100  9711
+
+
+PS C:\Git\emprestimos-biblioteca> # Confere se a senha do psql está definida nesta sessão
+PS C:\Git\emprestimos-biblioteca> "PGPASSWORD definida: $([bool]$env:PGPASSWORD)" | Out-Host
+PGPASSWORD definida: True
+PS C:\Git\emprestimos-biblioteca> # Lista as linhas do repositório que citam disponibilidade/status, com arquivo e número da linha
+PS C:\Git\emprestimos-biblioteca> Select-String -Path arquitetura\infraestrutura\repositorios_postgres.py -Pattern "disponiveis|DISPONIVEL|esta_disponivel" | ForEach-Object { "{0}:{1}: {2}" -f $_.Filename,$_.LineNumber,$_.Line.Trim() } | Out-Host
+repositorios_postgres.py:33: COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+repositorios_postgres.py:43: disponiveis = row[1] if isinstance(row, tuple) else row['disponiveis']
+repositorios_postgres.py:45: total, disponiveis = 0, 0
+repositorios_postgres.py:50: "disponiveis": disponiveis,
+repositorios_postgres.py:51: "em_estoque": disponiveis > 0
+repositorios_postgres.py:67: def esta_disponivel(self, exemplar_id: int) -> bool:
+repositorios_postgres.py:78: (disponivel,) = cur.fetchone()
+repositorios_postgres.py:79: return disponivel
+PS C:\Git\emprestimos-biblioteca> # Exibe as linhas 26 a 54 do repositório
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas arquitetura\infraestrutura\repositorios_postgres.py 26 54
+  26:     def buscar_disponibilidade(self, livro_id: int) -> dict:
+  27:         """Busca a contagem de exemplares totais e disponíveis para um livro."""
+  28:         with self._conexao.cursor() as cursor:
+  29:             cursor.execute(
+  30:                 """
+  31:                 SELECT
+  32:                     COUNT(*) AS total,
+  33:                     COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+  34:                 FROM exemplares
+  35:                 WHERE livro_id = %s;
+  36:                 """,
+  37:                 (livro_id,)
+  38:             )
+  39:             row = cursor.fetchone()
+  40:
+  41:             if row:
+  42:                 total = row[0] if isinstance(row, tuple) else row['total']
+  43:                 disponiveis = row[1] if isinstance(row, tuple) else row['disponiveis']
+  44:             else:
+  45:                 total, disponiveis = 0, 0
+  46:
+  47:             return {
+  48:                 "livro_id": livro_id,
+  49:                 "total": total,
+  50:                 "disponiveis": disponiveis,
+  51:                 "em_estoque": disponiveis > 0
+  52:             }
+  53:
+  54:     def buscar_por_id(self, exemplar_id: int) -> Optional[Exemplar]:
+PS C:\Git\emprestimos-biblioteca> # Exibe as linhas 67 a 80 do repositório
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas arquitetura\infraestrutura\repositorios_postgres.py 67 80
+  67:     def esta_disponivel(self, exemplar_id: int) -> bool:
+  68:         with self._conexao.cursor() as cur:
+  69:             cur.execute(
+  70:                 """
+  71:                 SELECT NOT EXISTS (
+  72:                     SELECT 1 FROM emprestimos
+  73:                     WHERE exemplar_id = %s AND devolvido_em IS NULL
+  74:                 )
+  75:                 """,
+  76:                 (exemplar_id,),
+  77:             )
+  78:             (disponivel,) = cur.fetchone()
+  79:             return disponivel
+  80:
+PS C:\Git\emprestimos-biblioteca> # Guarda o caminho completo do repositório (o .NET não usa a pasta atual do PowerShell)
+PS C:\Git\emprestimos-biblioteca> $repo = (Resolve-Path arquitetura\infraestrutura\repositorios_postgres.py).Path
+PS C:\Git\emprestimos-biblioteca> # Lê o arquivo como ANSI (Windows-1252) e mostra a linha com "totais e dispon"
+PS C:\Git\emprestimos-biblioteca> [IO.File]::ReadAllLines($repo, [Text.Encoding]::GetEncoding(1252)) | Where-Object { $_ -match "totais e dispon" } | ForEach-Object { "ANSI : " + $_.Trim() } | Out-Host
+ANSI : """Busca a contagem de exemplares totais e disponÃ­veis para um livro."""
+PS C:\Git\emprestimos-biblioteca> # Lê o mesmo arquivo como UTF-8 e mostra a mesma linha
+PS C:\Git\emprestimos-biblioteca> [IO.File]::ReadAllLines($repo, [Text.Encoding]::UTF8) | Where-Object { $_ -match "totais e dispon" } | ForEach-Object { "UTF-8: " + $_.Trim() } | Out-Host
+UTF-8: """Busca a contagem de exemplares totais e disponíveis para um livro."""
+PS C:\Git\emprestimos-biblioteca> # Roda no banco biblioteca_diag uma SQL equivalente à do repositório (total e disponíveis do livro 1)
+PS C:\Git\emprestimos-biblioteca> & $psql -U postgres -d biblioteca_diag -c "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis FROM exemplares WHERE livro_id = 1;" 2>&1 | Out-String | Write-Host
+ total | disponiveis 
+-------+-------------
+     2 |           0
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # ===== PARTE 8: SCHEMAS E REFERÊNCIAS AO STATUS =====
+PS C:\Git\emprestimos-biblioteca> # Procura "status" no biblioteca_schema.sql (ignora node_modules, .git e venv) e mostra o caminho completo
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -File -Filter biblioteca_schema.sql | Where-Object { $_.FullName -notmatch "node_modules|\\\.git\\|\\\.?venv\\" } | Select-String -Pattern "status" | ForEach-Object { "{0}:{1}: {2}" -f $_.Path,$_.LineNumber,$_.Line.Trim() } | Out-Host
+C:\Git\emprestimos-biblioteca\biblioteca_schema.sql:45: status              VARCHAR(20) NOT NULL DEFAULT 'ATIVO',
+C:\Git\emprestimos-biblioteca\biblioteca_schema.sql:47: CONSTRAINT ck_status_exemplar_valido CHECK (
+C:\Git\emprestimos-biblioteca\biblioteca_schema.sql:48: status IN ('ATIVO', 'BAIXADO', 'PERDIDO')
+C:\Git\emprestimos-biblioteca\biblioteca_schema.sql:57: status          VARCHAR(20) NOT NULL DEFAULT 'PENDENTE',
+C:\Git\emprestimos-biblioteca\biblioteca_schema.sql:60: CONSTRAINT ck_status_reserva_valido CHECK (
+C:\Git\emprestimos-biblioteca\biblioteca_schema.sql:61: status IN ('PENDENTE', 'AGUARDANDO_RETIRADA', 'ATENDIDA', 'EXPIRADA', 'CANCELADA')
+C:\Git\emprestimos-biblioteca\biblioteca_schema.sql:68: WHERE status IN ('PENDENTE', 'AGUARDANDO_RETIRADA');
+C:\Git\emprestimos-biblioteca\biblioteca_schema.sql:93: CREATE INDEX idx_reservas_livro_status ON reservas(livro_id, status);
+PS C:\Git\emprestimos-biblioteca> # Procura o texto exato DISPONIVEL (maiúsculo) no projeto, ignorando node_modules, .git, venv e docs\diagnostico
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -File -Include *.py,*.sql,*.md,*.js,*.jsx,*.yml,*.yaml | Where-Object { $_.FullName -notmatch "node_modules|\\\.git\\|\\\.?venv\\|docs\\diagnostico" } | Select-String -Pattern "DISPONIVEL" -CaseSensitive | ForEach-Object { "{0}:{1}: {2}" -f $_.Path,$_.LineNumber,$_.Line.Trim() } | Out-Host
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:33: COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+PS C:\Git\emprestimos-biblioteca> # ===== PARTE 9: LOGS E ENCERRAMENTO =====
+PS C:\Git\emprestimos-biblioteca> # Mostra data de modificação e tamanho dos logs da API (indica a qual rodada pertencem)
+PS C:\Git\emprestimos-biblioteca> Get-Item docs\diagnostico\evidencias\api-completo-com-dbname.err.log, docs\diagnostico\evidencias\api-completo-com-dbname.out.log | Select-Object Name, LastWriteTime, Length | Out-Host
+
+Name                            LastWriteTime       Length
+----                            -------------       ------
+api-completo-com-dbname.err.log 16/10/2026 14:09:24    202
+api-completo-com-dbname.out.log 19/10/2026 08:52:57    545
+
+
+PS C:\Git\emprestimos-biblioteca> # Exibe as últimas 15 linhas do log de erro da API
+PS C:\Git\emprestimos-biblioteca> Get-Content docs\diagnostico\evidencias\api-completo-com-dbname.err.log -Tail 15 -Encoding UTF8 | Out-Host
+INFO:     Started server process [18092]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+PS C:\Git\emprestimos-biblioteca> # Exibe as últimas 15 linhas do log de saída da API
+PS C:\Git\emprestimos-biblioteca> Get-Content docs\diagnostico\evidencias\api-completo-com-dbname.out.log -Tail 15 -Encoding UTF8 | Out-Host
+INFO:     127.0.0.1:60934 - "GET /disponibilidade/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64641 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61273 - "GET /disponibilidade/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55422 - "GET /disponibilidade/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61434 - "GET /disponibilidade/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60199 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60205 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53633 - "GET /disponibilidade/1 HTTP/1.1" 200 OK
+PS C:\Git\emprestimos-biblioteca> # Mostra qual processo escuta na porta 8000 antes de encerrar
+PS C:\Git\emprestimos-biblioteca> Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalPort, OwningProcess | Out-Host
+
+LocalPort OwningProcess
+--------- -------------
+     8000         18092
+
+
+PS C:\Git\emprestimos-biblioteca> # Encerra a API só se $api existir; se não existir, avisa em vez de falhar em silêncio
+PS C:\Git\emprestimos-biblioteca> if ($api) { Stop-Process -Id $api.Id -ErrorAction SilentlyContinue } else { "`$api não definida: a API NÃO foi encerrada" | Out-Host }
+PS C:\Git\emprestimos-biblioteca> # Confere se a porta 8000 ficou livre depois do encerramento
+PS C:\Git\emprestimos-biblioteca> "porta 8000 escutando: $([bool](Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue))"
+porta 8000 escutando: False
+PS C:\Git\emprestimos-biblioteca> # Remove a senha do postgres da sessão
+PS C:\Git\emprestimos-biblioteca> Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+PS C:\Git\emprestimos-biblioteca> # Encerra a gravação do Transcript
+PS C:\Git\emprestimos-biblioteca> Stop-Transcript
+**********************
+Fim da transcrição do Windows PowerShell
+Hora de término: 20261019093449
+**********************
