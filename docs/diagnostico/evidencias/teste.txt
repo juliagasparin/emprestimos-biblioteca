@@ -1,0 +1,50 @@
+﻿**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20261020090521
+Nome de Usuário: DESKTOP-G6SH7L9\julia
+Executar como Usuário: DESKTOP-G6SH7L9\julia
+Nome da Configuração: 
+Computador: DESKTOP-G6SH7L9 (Microsoft Windows NT 10.0.26300.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID do Processo: 4128
+PSVersion: 5.1.26100.9711
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9711
+BuildVersion: 10.0.26100.9711
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é docs\diagnostico\evidencias\teste.txt
+PS C:\Git\emprestimos-biblioteca> # Teste: o transcript captura saída de programa nativo?
+PS C:\Git\emprestimos-biblioteca> git --version 2>&1 | Out-Host
+git version 2.55.0.windows.3
+PS C:\Git\emprestimos-biblioteca> python --version 2>&1 | Out-Host
+Python 3.14.7
+PS C:\Git\emprestimos-biblioteca> & $psql --version 2>&1 | Out-Host
+A expressão depois de '&' em um elemento do pipeline produziu um objeto inválido. Ela deve resultar em um nome de 
+comando, bloco de script ou objeto CommandInfo.
+No linha:1 caractere:3
++ & $psql --version 2>&1 | Out-Host
++   ~~~~~
+    + CategoryInfo          : InvalidOperation: (:) [], RuntimeException
+    + FullyQualifiedErrorId : BadExpression
+A expressão depois de '&' em um elemento do pipeline produziu um
+objeto inválido. Ela deve resultar em um nome de comando, bloco de
+script ou objeto CommandInfo.
+No linha:1 caractere:3
++ & $psql --version 2>&1 | Out-Host
++   ~~~~~
+    + CategoryInfo          : InvalidOperation: (:) [], RuntimeExcepti
+   on
+    + FullyQualifiedErrorId : BadExpression
+
+PS C:\Git\emprestimos-biblioteca> $psql = "C:\Program Files\PostgreSQL\18\bin\psql.exe"
+PS C:\Git\emprestimos-biblioteca> & $psql --version 2>&1 | Out-Host
+psql (PostgreSQL) 18.4
+PS C:\Git\emprestimos-biblioteca> Stop-Transcript
+**********************
+Fim da transcrição do Windows PowerShell
+Hora de término: 20261020090827
+**********************

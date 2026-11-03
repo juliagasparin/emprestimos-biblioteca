@@ -1,0 +1,1143 @@
+﻿**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20261020090850
+Nome de Usuário: DESKTOP-G6SH7L9\julia
+Executar como Usuário: DESKTOP-G6SH7L9\julia
+Nome da Configuração: 
+Computador: DESKTOP-G6SH7L9 (Microsoft Windows NT 10.0.26300.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID do Processo: 4128
+PSVersion: 5.1.26100.9711
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9711
+BuildVersion: 10.0.26100.9711
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é docs\diagnostico\evidencias\cenario-1-fechamento.txt
+PS C:\Git\emprestimos-biblioteca> # Iniciação: pasta, encoding, transcript, ambiente e funções
+PS C:\Git\emprestimos-biblioteca> cd C:\Git\emprestimos-biblioteca
+PS C:\Git\emprestimos-biblioteca> [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+PS C:\Git\emprestimos-biblioteca> $OutputEncoding = [System.Text.Encoding]::UTF8
+PS C:\Git\emprestimos-biblioteca> $env:PGCLIENTENCODING = "UTF8"
+PS C:\Git\emprestimos-biblioteca> Get-Date | Out-Host
+
+terça-feira, 20 de outubro de 2026 09:09:06
+
+
+PS C:\Git\emprestimos-biblioteca> git rev-parse --short HEAD 2>&1 | Out-Host
+9278e33
+PS C:\Git\emprestimos-biblioteca> git status --short 2>&1 | Out-Host
+?? docs/
+PS C:\Git\emprestimos-biblioteca> python --version 2>&1 | Out-Host
+Python 3.14.7
+PS C:\Git\emprestimos-biblioteca> # Senha e caminho do psql
+PS C:\Git\emprestimos-biblioteca> $psql = "C:\Program Files\PostgreSQL\18\bin\psql.exe"
+PS C:\Git\emprestimos-biblioteca> $sec = Read-Host "Senha do postgres" -AsSecureString
+PS C:\Git\emprestimos-biblioteca> $env:PGPASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+PS C:\Git\emprestimos-biblioteca> # Funções
+PS C:\Git\emprestimos-biblioteca> function Sql($db, $cmd) { & $psql -U postgres -d $db -c $cmd 2>&1 | Out-String | Write-Host }
+PS C:\Git\emprestimos-biblioteca> function Ver-Redis {
+@'
+import redis
+r = redis.Redis(host='localhost', port=6379, db=0)
+k = 'disponibilidade:livro:1'
+print('DBSIZE', r.dbsize())
+print('CHAVES disponibilidade:*', [x.decode() for x in r.keys('disponibilidade:*')])
+print('TTL', k, r.ttl(k))
+v = r.get(k)
+print('VALOR', k, v.decode() if v else None)
+'@ | python - | Out-Host
+}
+PS C:\Git\emprestimos-biblioteca> function Limpar-Redis {
+@'
+import redis
+r = redis.Redis(host='localhost', port=6379, db=0)
+print('DEL disponibilidade:livro:1 ->', r.delete('disponibilidade:livro:1'))
+'@ | python - | Out-Host
+}
+PS C:\Git\emprestimos-biblioteca> function Esperar-Porta($porta) {
+    for ($t = 0; $t -lt 30; $t++) {
+        if (Get-NetTCPConnection -LocalPort $porta -State Listen -ErrorAction SilentlyContinue) { "porta $porta escutando apos $t s"; return }
+        Start-Sleep 1
+    }
+    "porta $porta NAO subiu em 30 s"
+}
+PS C:\Git\emprestimos-biblioteca> function Ver-Linhas($p, $a, $b) {
+    $i = 0
+    Get-Content $p -Encoding UTF8 | ForEach-Object { $i++; if ($i -ge $a -and $i -le $b) { "{0,4}: {1}" -f $i, $_ } }
+}
+PS C:\Git\emprestimos-biblioteca> function Buscar($padrao, $inc) {
+    Get-ChildItem -Recurse -File -Include $inc | Where-Object { $_.FullName -notmatch "node_modules|\\\.git\\|\\\.?venv\\|docs\\diagnostico" } |
+        Select-String -Pattern $padrao | ForEach-Object { "{0}:{1}: {2}" -f $_.Path, $_.LineNumber, $_.Line.Trim() }
+}
+PS C:\Git\emprestimos-biblioteca> # Pendência 2: em qual tabela está a restrição, no arquivo e no banco
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas biblioteca_schema.sql 35 65 | Out-Host
+  35:     livro_id    INTEGER NOT NULL REFERENCES livros(id) ON DELETE CASCADE,
+  36:     autor_id    INTEGER NOT NULL REFERENCES autores(id) ON DELETE CASCADE,
+  37:     PRIMARY KEY (livro_id, autor_id)
+  38: );
+  39:
+  40: -- Tabela: exemplares (cópia física)
+  41: CREATE TABLE exemplares (
+  42:     id                  SERIAL PRIMARY KEY,
+  43:     livro_id            INTEGER NOT NULL REFERENCES livros(id) ON DELETE RESTRICT,
+  44:     codigo_patrimonio   VARCHAR(30) NOT NULL UNIQUE,
+  45:     status              VARCHAR(20) NOT NULL DEFAULT 'ATIVO',
+  46:     adquirido_em        DATE NOT NULL DEFAULT CURRENT_DATE,
+  47:     CONSTRAINT ck_status_exemplar_valido CHECK (
+  48:         status IN ('ATIVO', 'BAIXADO', 'PERDIDO')
+  49:     )
+  50: );
+  51:
+  52: -- Tabela: reservas (fila de espera por título)
+  53: CREATE TABLE reservas (
+  54:     id              SERIAL PRIMARY KEY,
+  55:     livro_id        INTEGER NOT NULL REFERENCES livros(id) ON DELETE RESTRICT,
+  56:     usuario_id      INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE RESTRICT,
+  57:     status          VARCHAR(20) NOT NULL DEFAULT 'PENDENTE',
+  58:     criado_em       TIMESTAMP NOT NULL DEFAULT NOW(), -- desempate FIFO
+  59:     notificado_em   TIMESTAMP, -- NULL = na fila; preenchido = contando 48h
+  60:     CONSTRAINT ck_status_reserva_valido CHECK (
+  61:         status IN ('PENDENTE', 'AGUARDANDO_RETIRADA', 'ATENDIDA', 'EXPIRADA', 'CANCELADA')
+  62:     )
+  63: );
+  64:
+  65: -- Impede reserva ativa duplicada do mesmo usuário para o mesmo título
+PS C:\Git\emprestimos-biblioteca> Sql biblioteca_diag "\d exemplares"
+                                          Tabela "public.exemplares"
+      Coluna       |         Tipo          | Ordena��o | Pode ser nulo |                  Padr                  
+-------------------+-----------------------+----------+---------------+----------------------------------------
+ id                | integer               |          | not null      | nextval('exemplares_id_seq'::regclass)
+ livro_id          | integer               |          | not null      | 
+ codigo_patrimonio | character varying(30) |          | not null      | 
+ status            | character varying(20) |          | not null      | 'ATIVO'::character varying
+ adquirido_em      | date                  |          | not null      | CURRENT_DATE
+�ndices:
+    "exemplares_pkey" PRIMARY KEY, btree (id)
+    "exemplares_codigo_patrimonio_key" UNIQUE CONSTRAINT, btree (codigo_patrimonio)
+    "idx_exemplares_livro" btree (livro_id)
+Restri��es de verifica��o:
+    "ck_status_exemplar_valido" CHECK (status::text = ANY (ARRAY['ATIVO'::character varying, 'BAIXADO'::character varying, 'PERDIDO'::character varying]::text[]))
+Restri��es de chave estrangeira:
+    "exemplares_livro_id_fkey" FOREIGN KEY (livro_id) REFERENCES livros(id) ON DELETE RESTRICT
+Referenciada por:
+    TABLE "emprestimos" CONSTRAINT "emprestimos_exemplar_id_fkey" FOREIGN KEY (exemplar_id) REFERENCES exemplares(id) ON DELETE RESTRICT
+PS C:\Git\emprestimos-biblioteca> Sql biblioteca_diag "SELECT conrelid::regclass AS tabela, conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ck_status_exemplar_valido';"
+   tabela   |          conname          |                                                           pg_get_constraintdef                                                           
+------------+---------------------------+------------------------------------------------------------------------------------------------------------------------------------------
+ exemplares | ck_status_exemplar_valido | CHECK (((status)::text = ANY ((ARRAY['ATIVO'::character varying, 'BAIXADO'::character varying, 'PERDIDO'::character varying])::text[])))
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # Evidência A (leitura): para qual método a rota aponta
+PS C:\Git\emprestimos-biblioteca> Buscar "disponibilidade" *.py | Out-Host
+C:\Git\emprestimos-biblioteca\api\main.py:19: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+C:\Git\emprestimos-biblioteca\api\main.py:51: @app.get("/disponibilidade/{livro_id}")
+C:\Git\emprestimos-biblioteca\api\main.py:52: def consultar_disponibilidade_endpoint(livro_id: int, conexao = Depends(obter_conexao)):
+C:\Git\emprestimos-biblioteca\api\main.py:56: caso_uso = ConsultarDisponibilidade(repo_cache)
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\consultar_disponibilidade.py:4: class ConsultarDisponibilidade:
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\consultar_disponibilidade.py:9: """Consulta a disponibilidade de um livro utilizando o repositório configurado (com cache ou Postgres)."""
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\consultar_disponibilidade.py:10: return self._repo_exemplar.buscar_disponibilidade(livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\criar_emprestimo.py:73: self._repo_exemplar.invalidar_disponibilidade(livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\devolver_exemplar.py:27: self._repo_exemplar.invalidar_disponibilidade(exemplar.livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\dominio\repositorios.py:37: def buscar_disponibilidade(self, livro_id: int) -> dict:
+C:\Git\emprestimos-biblioteca\arquitetura\dominio\repositorios.py:42: def invalidar_disponibilidade(self, livro_id: int) -> None:
+C:\Git\emprestimos-biblioteca\arquitetura\dominio\repositorios.py:44: Invalida qualquer dado de disponibilidade em cache referente a este livro.
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\cache_keys.py:1: def chave_disponibilidade(livro_id: int) -> str:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\cache_keys.py:2: """Retorna a chave padronizada para o cache de disponibilidade de um livro."""
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\cache_keys.py:3: return f"disponibilidade:livro:{livro_id}"
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:26: def buscar_disponibilidade(self, livro_id: int) -> dict:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:81: def invalidar_disponibilidade(self, livro_id: int) -> None:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:5: from infraestrutura.cache_keys import chave_disponibilidade
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:15: return chave_disponibilidade(livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:17: def buscar_disponibilidade(self, livro_id: int) -> dict:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:26: resultado = self.repositorio_real.buscar_disponibilidade(livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:37: def invalidar_disponibilidade(self, livro_id: int) -> None:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:56: self.invalidar_disponibilidade(exemplar.livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:28: def buscar_disponibilidade(self, livro_id):
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:31: def invalidar_disponibilidade(self, livro_id):
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:7: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:46: caso_de_uso_consulta = ConsultarDisponibilidade(repo_exemplar=repo_exemplares_com_cache)
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:8: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:43: consultar = ConsultarDisponibilidade(repo_exemplar=repo_cache)
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:61: repo_cache.invalidar_disponibilidade(livro_id_teste)
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas api\main.py 1 100 | Out-Host
+   1: import os
+   2: import sys
+   3: from pathlib import Path
+   4: from dotenv import load_dotenv
+   5:
+   6: # Carrega as variáveis do arquivo .env na raiz do projeto
+   7: ROOT_DIR = Path(__file__).resolve().parent.parent
+   8: load_dotenv(ROOT_DIR / ".env")
+   9:
+  10: sys.path.append(str(ROOT_DIR / "arquitetura"))
+  11:
+  12: from fastapi import FastAPI, HTTPException, Depends
+  13: from fastapi.middleware.cors import CORSMiddleware
+  14: import psycopg
+  15: import redis
+  16:
+  17: from infraestrutura.repositorios_postgres import RepositorioExemplarPostgres
+  18: from infraestrutura.repositorio_exemplares_cache import RepositorioExemplarCache
+  19: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+  20:
+  21: app = FastAPI()
+  22:
+  23: app.add_middleware(
+  24:     CORSMiddleware,
+  25:     allow_origins=["http://localhost:5173"],
+  26:     allow_credentials=True,
+  27:     allow_methods=["*"],
+  28:     allow_headers=["*"],
+  29: )
+  30:
+  31: redis_client = redis.Redis(
+  32:     host=os.getenv("REDIS_HOST", "localhost"),
+  33:     port=int(os.getenv("REDIS_PORT", 6379)),
+  34:     db=0,
+  35:     decode_responses=True
+  36: )
+  37:
+  38: def obter_conexao():
+  39:     conexao = psycopg.connect(
+  40:         dbname=os.getenv("DB_NAME"),
+  41:         user=os.getenv("DB_USER"),
+  42:         password=os.getenv("DB_PASSWORD"),
+  43:         host=os.getenv("DB_HOST", "localhost"),
+  44:         port=os.getenv("DB_PORT", "5432")
+  45:     )
+  46:     try:
+  47:         yield conexao
+  48:     finally:
+  49:         conexao.close()
+  50:
+  51: @app.get("/disponibilidade/{livro_id}")
+  52: def consultar_disponibilidade_endpoint(livro_id: int, conexao = Depends(obter_conexao)):
+  53:     try:
+  54:         repo_postgres = RepositorioExemplarPostgres(conexao)
+  55:         repo_cache = RepositorioExemplarCache(repo_postgres, redis_client)
+  56:         caso_uso = ConsultarDisponibilidade(repo_cache)
+  57:
+  58:         resultado = caso_uso.executar(livro_id)
+  59:
+  60:         if not resultado or resultado.get("total", 0) == 0:
+  61:             raise HTTPException(status_code=404, detail="Livro não encontrado ou sem exemplares cadastrados.")
+  62:
+  63:         return resultado
+  64:     except HTTPException as he:
+  65:         raise he
+  66:     except Exception as e:
+  67:         raise HTTPException(status_code=500, detail=str(e))
+PS C:\Git\emprestimos-biblioteca> Buscar "buscar_disponibilidade|esta_disponivel|ConsultarDisponibilidade" *.py | Out-Host
+C:\Git\emprestimos-biblioteca\api\main.py:19: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+C:\Git\emprestimos-biblioteca\api\main.py:56: caso_uso = ConsultarDisponibilidade(repo_cache)
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\consultar_disponibilidade.py:4: class ConsultarDisponibilidade:
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\consultar_disponibilidade.py:10: return self._repo_exemplar.buscar_disponibilidade(livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\dominio\repositorios.py:33: def esta_disponivel(self, exemplar_id: int) -> bool:
+C:\Git\emprestimos-biblioteca\arquitetura\dominio\repositorios.py:37: def buscar_disponibilidade(self, livro_id: int) -> dict:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:26: def buscar_disponibilidade(self, livro_id: int) -> dict:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:67: def esta_disponivel(self, exemplar_id: int) -> bool:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:17: def buscar_disponibilidade(self, livro_id: int) -> dict:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:26: resultado = self.repositorio_real.buscar_disponibilidade(livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:46: def esta_disponivel(self, exemplar_id: int) -> bool:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:47: return self.repositorio_real.esta_disponivel(exemplar_id)
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:25: def esta_disponivel(self, exemplar_id):
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:28: def buscar_disponibilidade(self, livro_id):
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:7: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:46: caso_de_uso_consulta = ConsultarDisponibilidade(repo_exemplar=repo_exemplares_com_cache)
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:8: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:43: consultar = ConsultarDisponibilidade(repo_exemplar=repo_cache)
+PS C:\Git\emprestimos-biblioteca> # Completa a leitura estática do cache e do caso de uso
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas arquitetura\infraestrutura\repositorio_exemplares_cache.py 1 60 | Out-Host
+   1: import json
+   2: from typing import Optional
+   3: from dominio.exemplar import Exemplar
+   4: from dominio.repositorios import RepositorioExemplar
+   5: from infraestrutura.cache_keys import chave_disponibilidade
+   6:
+   7:
+   8: class RepositorioExemplarCache(RepositorioExemplar):
+   9:     def __init__(self, repositorio_real: RepositorioExemplar, redis_client, ttl: int = 60):
+  10:         self.repositorio_real = repositorio_real
+  11:         self.redis = redis_client
+  12:         self.ttl = ttl
+  13:
+  14:     def _chave_cache(self, livro_id: int) -> str:
+  15:         return chave_disponibilidade(livro_id)
+  16:
+  17:     def buscar_disponibilidade(self, livro_id: int) -> dict:
+  18:         chave = self._chave_cache(livro_id)
+  19:
+  20:         # 1. Tenta buscar no Cache (Redis)
+  21:         dados_cached = self.redis.get(chave)
+  22:         if dados_cached:
+  23:             return json.loads(dados_cached)
+  24:
+  25:         # 2. Cache Miss: Busca no banco de dados real
+  26:         resultado = self.repositorio_real.buscar_disponibilidade(livro_id)
+  27:
+  28:         # 3. Salva no Redis com TTL configurado
+  29:         self.redis.setex(
+  30:             name=chave,
+  31:             time=self.ttl,
+  32:             value=json.dumps(resultado)
+  33:         )
+  34:
+  35:         return resultado
+  36:
+  37:     def invalidar_disponibilidade(self, livro_id: int) -> None:
+  38:         """Invalida a chave do livro no Redis ao ocorrer alteração de estado."""
+  39:         chave = self._chave_cache(livro_id)
+  40:         self.redis.delete(chave)
+  41:
+  42:     # Delegando métodos de leitura diretamente para o repositório real
+  43:     def buscar_por_id(self, exemplar_id: int) -> Optional[Exemplar]:
+  44:         return self.repositorio_real.buscar_por_id(exemplar_id)
+  45:
+  46:     def esta_disponivel(self, exemplar_id: int) -> bool:
+  47:         return self.repositorio_real.esta_disponivel(exemplar_id)
+  48:
+  49:     # --- MÉTODOS DE ESCRITA / MUTAÇÃO NO DECORATOR ---
+  50:     # Se o seu RepositorioExemplar possui métodos que salvam ou alteram o estado do exemplar:
+  51:
+  52:     def salvar(self, exemplar: Exemplar) -> Exemplar:
+  53:         """Salva a alteração no banco e invalida o cache do livro correspondente."""
+  54:         exemplar_salvo = self.repositorio_real.salvar(exemplar)
+  55:         # O Decorator garante a invalidação sem que o Caso de Uso precise saber
+  56:         self.invalidar_disponibilidade(exemplar.livro_id)
+  57:         return exemplar_salvo
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas arquitetura\aplicacao\consultar_disponibilidade.py 1 15 | Out-Host
+   1: from dominio.repositorios import RepositorioExemplar
+   2:
+   3:
+   4: class ConsultarDisponibilidade:
+   5:     def __init__(self, repo_exemplar: RepositorioExemplar):
+   6:         self._repo_exemplar = repo_exemplar
+   7:
+   8:     def executar(self, livro_id: int) -> dict:
+   9:         """Consulta a disponibilidade de um livro utilizando o repositório configurado (com cache ou Postgres)."""
+  10:         return self._repo_exemplar.buscar_disponibilidade(livro_id)
+PS C:\Git\emprestimos-biblioteca> # Decide se o experimento do log é possível
+PS C:\Git\emprestimos-biblioteca> Sql postgres "SHOW logging_collector;"
+ logging_collector 
+-------------------
+ on
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> Sql postgres "SHOW log_directory;"
+ log_directory 
+---------------
+ log
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> Sql postgres "SHOW data_directory;"
+           data_directory            
+-------------------------------------
+ C:/Program Files/PostgreSQL/18/data
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> Sql postgres "SHOW log_line_prefix;"
+ log_line_prefix 
+-----------------
+ %t 
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> Sql postgres "SHOW log_timezone;"
+   log_timezone    
+-------------------
+ America/Sao_Paulo
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> Sql postgres "SHOW log_statement;"
+ log_statement 
+---------------
+ none
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> & $psql -U postgres -d postgres -At -c "SELECT pg_current_logfile();" 2>&1 | Out-Host
+log/postgresql-2026-10-15_031827.log
+PS C:\Git\emprestimos-biblioteca> # Liga log de statements só no biblioteca_diag e confere que ficou só nele
+PS C:\Git\emprestimos-biblioteca> Sql postgres "ALTER DATABASE biblioteca_diag SET log_statement = 'all';"
+ALTER DATABASE
+PS C:\Git\emprestimos-biblioteca> Sql postgres "SELECT d.datname, s.setconfig FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase;"
+     datname     |      setconfig      
+-----------------+---------------------
+ biblioteca_diag | {log_statement=all}
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # Marca onde o log está agora (só lerei o que vier depois)
+PS C:\Git\emprestimos-biblioteca> $logfile = (& $psql -U postgres -d postgres -At -c "SELECT pg_current_logfile();").Trim()
+PS C:\Git\emprestimos-biblioteca> $off = (& $psql -U postgres -d postgres -At -c "SELECT (pg_stat_file('$logfile')).size;").Trim()
+PS C:\Git\emprestimos-biblioteca> "logfile=[$logfile] offset=[$off]"
+logfile=[log/postgresql-2026-10-15_031827.log] offset=[8637]
+PS C:\Git\emprestimos-biblioteca> # API apontando para o biblioteca_diag
+PS C:\Git\emprestimos-biblioteca> $env:DB_NAME = "biblioteca_diag"
+PS C:\Git\emprestimos-biblioteca> "DB_NAME=[$env:DB_NAME]"
+DB_NAME=[biblioteca_diag]
+PS C:\Git\emprestimos-biblioteca> $ocupada = [bool](Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)
+PS C:\Git\emprestimos-biblioteca> "porta 8000 ocupada antes de subir: $ocupada"
+porta 8000 ocupada antes de subir: False
+PS C:\Git\emprestimos-biblioteca> if (-not $ocupada) {
+    # Sobe a API e registra PID e hora de início
+    $api = Start-Process python -ArgumentList "-m","uvicorn","api.main:app" -RedirectStandardOutput docs\diagnostico\evidencias\api-fechamento.out.log -RedirectStandardError docs\diagnostico\evidencias\api-fechamento.err.log -NoNewWindow -PassThru
+    Esperar-Porta 8000
+    Get-Process -Id $api.Id | Select-Object Id, StartTime | Out-Host
+
+    # Chamada 1: sem chave no Redis
+    Limpar-Redis
+    Ver-Redis
+    Sql biblioteca_diag "SELECT 'MARCADOR_1_chamada_sem_chave';"
+    curl.exe -s http://127.0.0.1:8000/disponibilidade/1 | Out-Host
+    Ver-Redis
+
+    # Chamada 2: com chave (dentro de 60 s)
+    Sql biblioteca_diag "SELECT 'MARCADOR_2_chamada_com_chave';"
+    curl.exe -s http://127.0.0.1:8000/disponibilidade/1 | Out-Host
+    Ver-Redis
+
+    # Chamada 3: depois de apagar a chave
+    Limpar-Redis
+    Ver-Redis
+    Sql biblioteca_diag "SELECT 'MARCADOR_3_depois_do_DEL';"
+    curl.exe -s http://127.0.0.1:8000/disponibilidade/1 | Out-Host
+    Ver-Redis
+
+    # Controle (banco sem log_statement: não pode aparecer no log) e fim
+    Sql emprestimo "SELECT 'CONTROLE_emprestimo_nao_deve_aparecer';"
+    Sql biblioteca_diag "SELECT 'MARCADOR_4_fim';"
+}
+porta 8000 escutando apos 4 s
+
+  Id StartTime
+  -- ---------
+7748 20/10/2026 09:27:22
+
+
+DEL disponibilidade:livro:1 -> 0
+DBSIZE 3
+CHAVES disponibilidade:* []
+TTL disponibilidade:livro:1 -2
+VALOR disponibilidade:livro:1 None
+           ?column?           
+------------------------------
+ MARCADOR_1_chamada_sem_chave
+(1 linha)
+{"livro_id":1,"total":2,"disponiveis":0,"em_estoque":false}
+DBSIZE 4
+CHAVES disponibilidade:* ['disponibilidade:livro:1']
+TTL disponibilidade:livro:1 58
+VALOR disponibilidade:livro:1 {"livro_id": 1, "total": 2, "disponiveis": 0, "em_estoque": false}
+           ?column?           
+------------------------------
+ MARCADOR_2_chamada_com_chave
+(1 linha)
+{"livro_id":1,"total":2,"disponiveis":0,"em_estoque":false}
+DBSIZE 4
+CHAVES disponibilidade:* ['disponibilidade:livro:1']
+TTL disponibilidade:livro:1 55
+VALOR disponibilidade:livro:1 {"livro_id": 1, "total": 2, "disponiveis": 0, "em_estoque": false}
+DEL disponibilidade:livro:1 -> 1
+DBSIZE 3
+CHAVES disponibilidade:* []
+TTL disponibilidade:livro:1 -2
+VALOR disponibilidade:livro:1 None
+         ?column?         
+--------------------------
+ MARCADOR_3_depois_do_DEL
+(1 linha)
+{"livro_id":1,"total":2,"disponiveis":0,"em_estoque":false}
+DBSIZE 4
+CHAVES disponibilidade:* ['disponibilidade:livro:1']
+TTL disponibilidade:livro:1 58
+VALOR disponibilidade:livro:1 {"livro_id": 1, "total": 2, "disponiveis": 0, "em_estoque": false}
+               ?column?                
+---------------------------------------
+ CONTROLE_emprestimo_nao_deve_aparecer
+(1 linha)
+    ?column?    
+----------------
+ MARCADOR_4_fim
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # Evidência B: lê só o trecho novo do log e salva como evidência
+PS C:\Git\emprestimos-biblioteca> Start-Sleep 2
+PS C:\Git\emprestimos-biblioteca> $logfile2 = (& $psql -U postgres -d postgres -At -c "SELECT pg_current_logfile();").Trim()
+PS C:\Git\emprestimos-biblioteca> "arquivo antes: $logfile | arquivo agora: $logfile2"
+arquivo antes: log/postgresql-2026-10-15_031827.log | arquivo agora: log/postgresql-2026-10-15_031827.log
+PS C:\Git\emprestimos-biblioteca> $txt = & $psql -U postgres -d postgres -At -c "SELECT pg_read_file('$logfile', $off, 10000000);" 2>&1
+PS C:\Git\emprestimos-biblioteca> $txt | Out-File docs\diagnostico\evidencias\pglog-fechamento.txt -Encoding UTF8
+PS C:\Git\emprestimos-biblioteca> # Trecho entre o primeiro e o último marcador, mais a contagem do controle
+PS C:\Git\emprestimos-biblioteca> $idx = 0..($txt.Count - 1) | Where-Object { $txt[$_] -match "MARCADOR_|CONTROLE_" }
+PS C:\Git\emprestimos-biblioteca> "linhas do log: $($txt.Count) | linhas com marcador: $($idx -join ', ')"
+linhas do log: 49 | linhas com marcador: 0, 20, 22, 42
+PS C:\Git\emprestimos-biblioteca> $txt[$idx[0]..$idx[-1]] | Out-Host
+2026-10-20 09:27:32 -03 LOG:  comando: SELECT 'MARCADOR_1_chamada_sem_chave';
+
+2026-10-20 09:27:34 -03 LOG:  comando: BEGIN
+
+2026-10-20 09:27:34 -03 LOG:  executar <unnamed>:
+
+	                SELECT
+
+	                    COUNT(*) AS total,
+
+	                    COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+
+	                FROM exemplares
+
+	                WHERE livro_id = $1;
+
+
+
+2026-10-20 09:27:34 -03 DETALHE:  Parameters: $1 = '1'
+
+2026-10-20 09:27:37 -03 LOG:  comando: SELECT 'MARCADOR_2_chamada_com_chave';
+
+2026-10-20 09:27:44 -03 LOG:  comando: SELECT 'MARCADOR_3_depois_do_DEL';
+
+2026-10-20 09:27:44 -03 LOG:  comando: BEGIN
+
+2026-10-20 09:27:44 -03 LOG:  executar <unnamed>:
+
+	                SELECT
+
+	                    COUNT(*) AS total,
+
+	                    COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+
+	                FROM exemplares
+
+	                WHERE livro_id = $1;
+
+
+
+2026-10-20 09:27:44 -03 DETALHE:  Parameters: $1 = '1'
+
+2026-10-20 09:27:47 -03 LOG:  comando: SELECT 'MARCADOR_4_fim';
+PS C:\Git\emprestimos-biblioteca> "CONTROLE_emprestimo no log: $(@($txt | Select-String 'CONTROLE_emprestimo').Count)"
+CONTROLE_emprestimo no log: 0
+PS C:\Git\emprestimos-biblioteca> # Remove o log_statement e confirma que não sobrou configuração
+PS C:\Git\emprestimos-biblioteca> Sql postgres "ALTER DATABASE biblioteca_diag RESET log_statement;"
+ALTER DATABASE
+PS C:\Git\emprestimos-biblioteca> Sql postgres "SELECT d.datname, s.setconfig FROM pg_db_role_setting s LEFT JOIN pg_database d ON d.oid = s.setdatabase;"
+ datname | setconfig 
+---------+-----------
+(0 linha)
+PS C:\Git\emprestimos-biblioteca> # Para a API
+PS C:\Git\emprestimos-biblioteca> if ($api) { Stop-Process -Id $api.Id -ErrorAction SilentlyContinue } else { "`$api nao definida nesta janela" }
+PS C:\Git\emprestimos-biblioteca> "porta 8000 escutando: $([bool](Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue))"
+porta 8000 escutando: False
+PS C:\Git\emprestimos-biblioteca> Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalPort, OwningProcess | Out-Host
+PS C:\Git\emprestimos-biblioteca> # Log de acesso da API e limpeza da sessão
+PS C:\Git\emprestimos-biblioteca> Get-Content docs\diagnostico\evidencias\api-fechamento.out.log -Encoding UTF8 | Out-Host
+INFO:     127.0.0.1:63100 - "GET /disponibilidade/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63107 - "GET /disponibilidade/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63116 - "GET /disponibilidade/1 HTTP/1.1" 200 OK
+PS C:\Git\emprestimos-biblioteca> Get-Content docs\diagnostico\evidencias\api-fechamento.err.log -Encoding UTF8 | Out-Host
+INFO:     Started server process [7748]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+PS C:\Git\emprestimos-biblioteca> Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+PS C:\Git\emprestimos-biblioteca> Remove-Item Env:DB_NAME -ErrorAction SilentlyContinue
+PS C:\Git\emprestimos-biblioteca> Stop-Transcript
+**********************
+Fim da transcrição do Windows PowerShell
+Hora de término: 20261020093139
+**********************
+**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20261020140744
+Nome de Usuário: DESKTOP-G6SH7L9\julia
+Executar como Usuário: DESKTOP-G6SH7L9\julia
+Nome da Configuração: 
+Computador: DESKTOP-G6SH7L9 (Microsoft Windows NT 10.0.26300.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID do Processo: 4128
+PSVersion: 5.1.26100.9711
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9711
+BuildVersion: 10.0.26100.9711
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é docs\diagnostico\evidencias\cenario-1-fechamento.txt
+PS C:\Git\emprestimos-biblioteca> Get-Date | Out-Host
+
+terça-feira, 20 de outubro de 2026 14:07:44
+
+
+PS C:\Git\emprestimos-biblioteca> git rev-parse --short HEAD 2>&1 | Out-Host
+9278e33
+PS C:\Git\emprestimos-biblioteca> git status --short 2>&1 | Out-Host
+?? docs/
+PS C:\Git\emprestimos-biblioteca> python --version 2>&1 | Out-Host
+Python 3.14.7
+PS C:\Git\emprestimos-biblioteca> # Senha e caminho do psql
+PS C:\Git\emprestimos-biblioteca> $psql = "C:\Program Files\PostgreSQL\18\bin\psql.exe"
+PS C:\Git\emprestimos-biblioteca> $sec = Read-Host "Senha do postgres" -AsSecureString
+PS C:\Git\emprestimos-biblioteca> $env:PGPASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+PS C:\Git\emprestimos-biblioteca> # Funções
+PS C:\Git\emprestimos-biblioteca> function Sql($db, $cmd) { & $psql -U postgres -d $db -c $cmd 2>&1 | Out-String | Write-Host }
+PS C:\Git\emprestimos-biblioteca> function Ver-Linhas($p, $a, $b) {
+    $i = 0
+    Get-Content $p -Encoding UTF8 | ForEach-Object { $i++; if ($i -ge $a -and $i -le $b) { "{0,4}: {1}" -f $i, $_ } }
+}
+PS C:\Git\emprestimos-biblioteca> function Buscar($padrao, $inc) {
+    Get-ChildItem -Recurse -File -Include $inc | Where-Object { $_.FullName -notmatch "node_modules|\\\.git\\|\\\.?venv\\|docs\\diagnostico" } |
+        Select-String -Pattern $padrao | ForEach-Object { "{0}:{1}: {2}" -f $_.Path, $_.LineNumber, $_.Line.Trim() }
+}
+PS C:\Git\emprestimos-biblioteca> # Limitação 7: o que o domínio e a documentação dizem que é "disponível"
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas arquitetura\dominio\repositorios.py 25 50 | Out-Host
+  25:
+  26:
+  27: class RepositorioExemplar(ABC):
+  28:     @abstractmethod
+  29:     def buscar_por_id(self, exemplar_id: int) -> Optional[Exemplar]:
+  30:         ...
+  31:
+  32:     @abstractmethod
+  33:     def esta_disponivel(self, exemplar_id: int) -> bool:
+  34:         ...
+  35:
+  36:     @abstractmethod
+  37:     def buscar_disponibilidade(self, livro_id: int) -> dict:
+  38:         """Retorna a contagem total e disponíveis para o livro."""
+  39:         ...
+  40:
+  41:     @abstractmethod
+  42:     def invalidar_disponibilidade(self, livro_id: int) -> None:
+  43:         """
+  44:         Invalida qualquer dado de disponibilidade em cache referente a este livro.
+  45:         Implementações sem cache podem simplesmente não fazer nada (pass).
+  46:         """
+  47:         ...
+  48:
+  49:
+  50: class RepositorioReserva(ABC):
+PS C:\Git\emprestimos-biblioteca> Buscar "dispon" *.md | Out-Host
+C:\Git\emprestimos-biblioteca\README.md:22: - [Etapa 8 — React (Fatia 1: Disponibilidade)](#etapa-8--react-fatia-1-disponibilidade)
+C:\Git\emprestimos-biblioteca\README.md:39: **Pré-requisitos:** PostgreSQL e Redis disponíveis (local ou em contêiner) e um
+C:\Git\emprestimos-biblioteca\README.md:106: ### Decisão: disponibilidade derivada, não armazenada
+C:\Git\emprestimos-biblioteca\README.md:108: Em vez de uma coluna `disponivel`, a disponibilidade de um exemplar é calculada pela
+C:\Git\emprestimos-biblioteca\README.md:171: │   ├── consultar_disponibilidade.py  # Caso de uso de consulta
+C:\Git\emprestimos-biblioteca\README.md:289: local assume o cálculo quando o serviço remoto está indisponível.
+C:\Git\emprestimos-biblioteca\README.md:331: ### Parte 2 — Cache de disponibilidade (Redis, Cache-Aside)
+C:\Git\emprestimos-biblioteca\README.md:335: A consulta de disponibilidade por livro é chamada com alta frequência
+C:\Git\emprestimos-biblioteca\README.md:343: Redis com `SETEX` (TTL 60s). O caso de uso `ConsultarDisponibilidade` não muda — a
+C:\Git\emprestimos-biblioteca\README.md:374: - **A correção:** `invalidar_disponibilidade(livro_id)` foi adicionado à interface
+C:\Git\emprestimos-biblioteca\README.md:414: # Etapa 8 — React (Fatia 1: Disponibilidade)
+C:\Git\emprestimos-biblioteca\README.md:417: Conectar o backend FastAPI existente a uma interface web em React/Vite para permitir a consulta interativa da disponibilidade de exemplares de um livro, garantindo a gestão adequada de estados da UI e a privacidade de dados sensíveis.
+C:\Git\emprestimos-biblioteca\README.md:422: - **Contrato de Dados Rígido:** Tipagem estrita no frontend alinhada ao payload do endpoint (`GET /disponibilidade/{livro_id}`):
+C:\Git\emprestimos-biblioteca\README.md:424: interface Disponibilidade {
+C:\Git\emprestimos-biblioteca\README.md:427: disponiveis: number;
+C:\Git\emprestimos-biblioteca\README.md:477: por permissão: para colaboradores sem bypass o merge fica indisponível; para
+PS C:\Git\emprestimos-biblioteca> # Como o frontend rotula o resultado
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas frontend\src\App.tsx 40 100 | Out-Host
+  40:     } catch (err: any) {
+  41:       setErro(err.message || 'Erro ao conectar com o servidor.')
+  42:     } finally {
+  43:       setLoading(false)
+  44:     }
+  45:   }
+  46:
+  47:   return (
+  48:     <div style={{ maxWidth: '500px', margin: '40px auto', fontFamily: 'sans-serif', textAlign: 'left' }}>
+  49:       <h2>Consulta de Disponibilidade de Livro</h2>
+  50:
+  51:       {/* 3.1 Input + Botão */}
+  52:       <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
+  53:         <input
+  54:           type="number"
+  55:           value={livroIdInput}
+  56:           onChange={(e) => setLivroIdInput(e.target.value)}
+  57:           placeholder="Digite o ID do livro"
+  58:           style={{ padding: '8px', fontSize: '16px', width: '100%' }}
+  59:         />
+  60:         <button
+  61:           onClick={buscarDisponibilidade}
+  62:           disabled={loading}
+  63:           style={{ padding: '8px 16px', fontSize: '16px', cursor: 'pointer' }}
+  64:         >
+  65:           {loading ? 'Buscando...' : 'Buscar'}
+  66:         </button>
+  67:       </div>
+  68:
+  69:       {/* 3.4 Renderização Condicional */}
+  70:       {loading && <p>Carregando dados do livro...</p>}
+  71:
+  72:       {erro && (
+  73:         <div style={{ color: 'red', padding: '10px', border: '1px solid red', borderRadius: '4px' }}>
+  74:           <strong>Erro:</strong> {erro}
+  75:         </div>
+  76:       )}
+  77:
+  78:       {resultado && (
+  79:         <div style={{ padding: '15px', border: '1px solid #ccc', borderRadius: '8px', backgroundColor: '#f9f9f9', color: '#333' }}>
+  80:           <h3>Status do Livro #{resultado.livro_id}</h3>
+  81:           <p><strong>Total de exemplares:</strong> {resultado.total}</p>
+  82:           <p><strong>Disponíveis para empréstimo:</strong> {resultado.disponiveis}</p>
+  83:           <p><strong>Em estoque:</strong> {resultado.em_estoque ? 'Sim ✅' : 'Não ❌'}</p>
+  84:         </div>
+  85:       )}
+  86:     </div>
+  87:   )
+  88: }
+  89:
+  90: export default App
+PS C:\Git\emprestimos-biblioteca> # Limitação 8: busca ampliada por DISPONIVEL (o escopo é a lista de extensões impressa abaixo)
+PS C:\Git\emprestimos-biblioteca> $ext = @("*.py","*.sql","*.md","*.js","*.jsx","*.ts","*.tsx","*.yml","*.yaml","*.json","*.html","*.css","*.toml","*.cfg","*.ini","*.txt")
+PS C:\Git\emprestimos-biblioteca> "extensoes: $($ext -join ' ')"
+extensoes: *.py *.sql *.md *.js *.jsx *.ts *.tsx *.yml *.yaml *.json *.html *.css *.toml *.cfg *.ini *.txt
+PS C:\Git\emprestimos-biblioteca> Buscar "DISPONIVEL" $ext | Out-Host
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\criar_emprestimo.py:15: class ExemplarIndisponivelError(Exception):
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\criar_emprestimo.py:41: raise ExemplarIndisponivelError(
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\criar_emprestimo.py:46: raise ExemplarIndisponivelError(
+C:\Git\emprestimos-biblioteca\arquitetura\dominio\repositorios.py:33: def esta_disponivel(self, exemplar_id: int) -> bool:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:33: COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:67: def esta_disponivel(self, exemplar_id: int) -> bool:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:78: (disponivel,) = cur.fetchone()
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:79: return disponivel
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:46: def esta_disponivel(self, exemplar_id: int) -> bool:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:47: return self.repositorio_real.esta_disponivel(exemplar_id)
+C:\Git\emprestimos-biblioteca\arquitetura\teste\teste_integracao_prazo_remoto.py:57: def testar_integracao_fallback_indisponivel():
+C:\Git\emprestimos-biblioteca\arquitetura\teste\teste_integracao_prazo_remoto.py:100: testar_integracao_fallback_indisponivel()
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:14: from aplicacao.criar_emprestimo import CriarEmprestimo, ExemplarIndisponivelError
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:25: def esta_disponivel(self, exemplar_id):
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:169: with pytest.raises(ExemplarIndisponivelError):
+C:\Git\emprestimos-biblioteca\README.md:108: Em vez de uma coluna `disponivel`, a disponibilidade de um exemplar é calculada pela
+PS C:\Git\emprestimos-biblioteca> # Mesma busca em todos os arquivos versionados, qualquer extensão
+PS C:\Git\emprestimos-biblioteca> git grep -n -I "DISPONIVEL" 2>&1 | Out-Host
+arquitetura/infraestrutura/repositorios_postgres.py:33:                    COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+PS C:\Git\emprestimos-biblioteca> # Limitação 7: os _kombu.* do Redis são do Celery?
+PS C:\Git\emprestimos-biblioteca> Buscar "celery|kombu" *.py | Out-Host
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\tasks.py:5: from celery_app import app
+C:\Git\emprestimos-biblioteca\arquitetura\celery_app.py:2: from celery import Celery
+C:\Git\emprestimos-biblioteca\arquitetura\celery_app.py:3: from celery.schedules import crontab
+C:\Git\emprestimos-biblioteca\arquitetura\celery_app.py:9: app = Celery(
+PS C:\Git\emprestimos-biblioteca> # Prova de rejeição: id 999 explícito, para não consumir a sequência. Deve falhar
+PS C:\Git\emprestimos-biblioteca> Sql biblioteca_diag "INSERT INTO exemplares (id, livro_id, codigo_patrimonio, status) VALUES (999, 1, 'PAT-TESTE-REJEICAO', 'DISPONIVEL');"
+psql.exe : ERRO:  a nova linha da relação "exemplares" viola a 
+restrição de verificação "ck_status_exemplar_valido"
+No linha:1 caractere:27
++ ... tion Sql($db, $cmd) { & $psql -U postgres -d $db -c $cmd 2>&1 | 
+Out-S ...
++                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (ERRO:  a nova l...xemplar 
+   _valido":String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+DETALHE:  Registro que falhou contém (999, 1, PAT-TESTE-REJEICAO, 
+DISPONIVEL, 2026-10-20).
+PS C:\Git\emprestimos-biblioteca> # Confere que nada entrou
+PS C:\Git\emprestimos-biblioteca> Sql biblioteca_diag "SELECT COUNT(*) AS total_depois_da_rejeicao FROM exemplares WHERE livro_id = 1;"
+ total_depois_da_rejeicao 
+--------------------------
+                        2
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # Quando o schema e o filtro entraram, e por quem
+PS C:\Git\emprestimos-biblioteca> git log --format="%h %ad %an %s" --date=short --follow -- biblioteca_schema.sql 2>&1 | Out-Host
+223dfc5 2026-08-12 Julia Gasparin refactor: reestrutura projeto para Clean Architecture com testes unitarios
+PS C:\Git\emprestimos-biblioteca> git log --format="%h %ad %an %s" --date=short --all -S"DISPONIVEL" -- arquitetura\infraestrutura\repositorios_postgres.py 2>&1 | Out-Host
+089c5b9 2026-09-23 Julia Gasparin Etapa 7 - Processamento Assíncrono
+PS C:\Git\emprestimos-biblioteca> git blame -L 33,33 arquitetura\infraestrutura\repositorios_postgres.py 2>&1 | Out-Host
+089c5b93 (Julia Gasparin 2026-09-23 10:41:05 -0300 33)                     COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+PS C:\Git\emprestimos-biblioteca> git blame -L 67,79 arquitetura\infraestrutura\repositorios_postgres.py 2>&1 | Out-Host
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 67)     def esta_disponivel(self, exemplar_id: int) -> bool:
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 68)         with self._conexao.cursor() as cur:
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 69)             cur.execute(
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 70)                 """
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 71)                 SELECT NOT EXISTS (
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 72)                     SELECT 1 FROM emprestimos
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 73)                     WHERE exemplar_id = %s AND devolvido_em IS NULL
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 74)                 )
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 75)                 """,
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 76)                 (exemplar_id,),
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 77)             )
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 78)             (disponivel,) = cur.fetchone()
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 79)             return disponivel
+PS C:\Git\emprestimos-biblioteca> git blame -L 45,48 biblioteca_schema.sql 2>&1 | Out-Host
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 45)     status              VARCHAR(20) NOT NULL DEFAULT 'ATIVO',
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 46)     adquirido_em        DATE NOT NULL DEFAULT CURRENT_DATE,
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 47)     CONSTRAINT ck_status_exemplar_valido CHECK (
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 48)         status IN ('ATIVO', 'BAIXADO', 'PERDIDO')
+PS C:\Git\emprestimos-biblioteca> # Onde estão os testes e o que mais fala de disponibilidade
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -File -Filter testar_cache_fluxo.py | Where-Object { $_.FullName -notmatch "node_modules|\\\.git\\|venv" } | Select-Object FullName | Out-Host
+
+FullName
+--------
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py
+
+
+PS C:\Git\emprestimos-biblioteca> Buscar "disponi" *.py | Out-Host
+C:\Git\emprestimos-biblioteca\api\main.py:19: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+C:\Git\emprestimos-biblioteca\api\main.py:51: @app.get("/disponibilidade/{livro_id}")
+C:\Git\emprestimos-biblioteca\api\main.py:52: def consultar_disponibilidade_endpoint(livro_id: int, conexao = Depends(obter_conexao)):
+C:\Git\emprestimos-biblioteca\api\main.py:56: caso_uso = ConsultarDisponibilidade(repo_cache)
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\consultar_disponibilidade.py:4: class ConsultarDisponibilidade:
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\consultar_disponibilidade.py:9: """Consulta a disponibilidade de um livro utilizando o repositório configurado (com cache ou Postgres)."""
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\consultar_disponibilidade.py:10: return self._repo_exemplar.buscar_disponibilidade(livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\criar_emprestimo.py:15: class ExemplarIndisponivelError(Exception):
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\criar_emprestimo.py:41: raise ExemplarIndisponivelError(
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\criar_emprestimo.py:46: raise ExemplarIndisponivelError(
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\criar_emprestimo.py:73: self._repo_exemplar.invalidar_disponibilidade(livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\devolver_exemplar.py:27: self._repo_exemplar.invalidar_disponibilidade(exemplar.livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\dominio\repositorios.py:33: def esta_disponivel(self, exemplar_id: int) -> bool:
+C:\Git\emprestimos-biblioteca\arquitetura\dominio\repositorios.py:37: def buscar_disponibilidade(self, livro_id: int) -> dict:
+C:\Git\emprestimos-biblioteca\arquitetura\dominio\repositorios.py:42: def invalidar_disponibilidade(self, livro_id: int) -> None:
+C:\Git\emprestimos-biblioteca\arquitetura\dominio\repositorios.py:44: Invalida qualquer dado de disponibilidade em cache referente a este livro.
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\cache_keys.py:1: def chave_disponibilidade(livro_id: int) -> str:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\cache_keys.py:2: """Retorna a chave padronizada para o cache de disponibilidade de um livro."""
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\cache_keys.py:3: return f"disponibilidade:livro:{livro_id}"
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:26: def buscar_disponibilidade(self, livro_id: int) -> dict:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:33: COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:43: disponiveis = row[1] if isinstance(row, tuple) else row['disponiveis']
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:45: total, disponiveis = 0, 0
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:50: "disponiveis": disponiveis,
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:51: "em_estoque": disponiveis > 0
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:67: def esta_disponivel(self, exemplar_id: int) -> bool:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:78: (disponivel,) = cur.fetchone()
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:79: return disponivel
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorios_postgres.py:81: def invalidar_disponibilidade(self, livro_id: int) -> None:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:5: from infraestrutura.cache_keys import chave_disponibilidade
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:15: return chave_disponibilidade(livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:17: def buscar_disponibilidade(self, livro_id: int) -> dict:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:26: resultado = self.repositorio_real.buscar_disponibilidade(livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:37: def invalidar_disponibilidade(self, livro_id: int) -> None:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:46: def esta_disponivel(self, exemplar_id: int) -> bool:
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:47: return self.repositorio_real.esta_disponivel(exemplar_id)
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\repositorio_exemplares_cache.py:56: self.invalidar_disponibilidade(exemplar.livro_id)
+C:\Git\emprestimos-biblioteca\arquitetura\teste\teste_integracao_prazo_remoto.py:57: def testar_integracao_fallback_indisponivel():
+C:\Git\emprestimos-biblioteca\arquitetura\teste\teste_integracao_prazo_remoto.py:100: testar_integracao_fallback_indisponivel()
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:14: from aplicacao.criar_emprestimo import CriarEmprestimo, ExemplarIndisponivelError
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:25: def esta_disponivel(self, exemplar_id):
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:28: def buscar_disponibilidade(self, livro_id):
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:31: def invalidar_disponibilidade(self, livro_id):
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestimo.py:169: with pytest.raises(ExemplarIndisponivelError):
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:7: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:46: caso_de_uso_consulta = ConsultarDisponibilidade(repo_exemplar=repo_exemplares_com_cache)
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:8: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:43: consultar = ConsultarDisponibilidade(repo_exemplar=repo_cache)
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:61: repo_cache.invalidar_disponibilidade(livro_id_teste)
+PS C:\Git\emprestimos-biblioteca> # Leitura integral dos dois arquivos de teste
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas arquitetura\testar_cache_fluxo.py 1 120 | Out-Host
+   1: import os
+   2: import time
+   3: import redis
+   4: import psycopg
+   5:
+   6: from infraestrutura.repositorios_postgres import RepositorioExemplarPostgres
+   7: from infraestrutura.repositorio_exemplares_cache import RepositorioExemplarCache
+   8: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+   9:
+  10:
+  11: def rodar_teste():
+  12:     print("--- INICIANDO TESTE MANUAL DE CACHE E INVALIDAÇÃO ---")
+  13:
+  14:     db_host = os.getenv("DB_HOST", "localhost")
+  15:     db_port = os.getenv("DB_PORT", "5432")
+  16:     db_user = os.getenv("DB_USER", "postgres")
+  17:     db_name = os.getenv("DB_NAME", "biblioteca")
+  18:
+  19:     db_password = os.getenv("DB_PASSWORD") or os.getenv("DB_PASS")
+  20:     if not db_password:
+  21:         raise ValueError("Erro de Configuração: A variável de ambiente DB_PASSWORD é obrigatória para este teste.")
+  22:
+  23:     conn_string = f"host={db_host} port={db_port} user={db_user} password={db_password} dbname={db_name}"
+  24:     conexao_pg = psycopg.connect(conn_string)
+  25:
+  26:     redis_host = os.getenv("REDIS_HOST", "localhost")
+  27:     redis_port = int(os.getenv("REDIS_PORT", 6379))
+  28:
+  29:     redis_client = redis.Redis(
+  30:         host=redis_host,
+  31:         port=redis_port,
+  32:         db=0,
+  33:         decode_responses=True
+  34:     )
+  35:
+  36:     repo_postgres = RepositorioExemplarPostgres(conexao=conexao_pg)
+  37:     repo_cache = RepositorioExemplarCache(
+  38:         repositorio_real=repo_postgres,
+  39:         redis_client=redis_client,
+  40:         ttl=60
+  41:     )
+  42:
+  43:     consultar = ConsultarDisponibilidade(repo_exemplar=repo_cache)
+  44:     livro_id_teste = 1
+  45:
+  46:     print("\n[1] Realizando 1ª consulta (Deve ir ao Banco):")
+  47:     inicio = time.time()
+  48:     res1 = consultar.executar(livro_id_teste)
+  49:     fim = time.time()
+  50:     print(f"Resultado: {res1}")
+  51:     print(f"Tempo decorrido: {fim - inicio:.4f}s")
+  52:
+  53:     print("\n[2] Realizando 2ª consulta seguida (Deve vir do Cache Redis):")
+  54:     inicio = time.time()
+  55:     res2 = consultar.executar(livro_id_teste)
+  56:     fim = time.time()
+  57:     print(f"Resultado: {res2}")
+  58:     print(f"Tempo decorrido: {fim - inicio:.4f}s")
+  59:
+  60:     print("\n[3] Invalidando o cache do livro...")
+  61:     repo_cache.invalidar_disponibilidade(livro_id_teste)
+  62:     print("Cache invalidado com sucesso!")
+  63:
+  64:     print("\n[4] Realizando consulta após invalidação (Deve ir ao Banco novamente):")
+  65:     inicio = time.time()
+  66:     res3 = consultar.executar(livro_id_teste)
+  67:     fim = time.time()
+  68:     print(f"Resultado: {res3}")
+  69:     print(f"Tempo decorrido: {fim - inicio:.4f}s")
+  70:
+  71:     conexao_pg.close()
+  72:     print("\n--- TESTE CONCLUÍDO COM SUCESSO ---")
+  73:
+  74:
+  75: if __name__ == "__main__":
+  76:     rodar_teste()
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas arquitetura\teste\test_criar_emprestimo.py 1 60 | Out-Host
+   1: # prova automatizada (com repositórios falsos)
+   2: # de que a invariante da reserva é respeitada.
+   3: from datetime import datetime
+   4:
+   5: import pytest
+   6:
+   7: from dominio.exemplar import Exemplar, StatusExemplar
+   8: from dominio.reserva import Reserva, StatusReserva
+   9: from dominio.repositorios import (
+  10:     RepositorioExemplar,
+  11:     RepositorioReserva,
+  12:     RepositorioEmprestimo,
+  13: )
+  14: from aplicacao.criar_emprestimo import CriarEmprestimo, ExemplarIndisponivelError
+  15: from dominio.politica_prazo import PrazoPadrao
+  16:
+  17:
+  18: class RepositorioExemplarFake(RepositorioExemplar):
+  19:     def __init__(self, exemplares):
+  20:         self._exemplares = {e.id: e for e in exemplares}
+  21:
+  22:     def buscar_por_id(self, exemplar_id):
+  23:         return self._exemplares.get(exemplar_id)
+  24:
+  25:     def esta_disponivel(self, exemplar_id):
+  26:         return True
+  27:
+  28:     def buscar_disponibilidade(self, livro_id):
+  29:         return None
+  30:
+  31:     def invalidar_disponibilidade(self, livro_id):
+  32:         pass
+  33:
+  34:     def buscar_aguardando_retirada(self, livro_id: int):
+  35:         return []
+  36:
+  37:     def marcar_como_expirada(self, reserva_id: int):
+  38:         pass
+  39:
+  40: class RepositorioReservaFake(RepositorioReserva):
+  41:     def __init__(self, reservas):
+  42:         self._reservas = {r.id: r for r in reservas}
+  43:
+  44:     def buscar_por_id(self, reserva_id):
+  45:         return self._reservas.get(reserva_id)
+  46:
+  47:     def existe_reserva_pendente_para_livro(self, livro_id, excluir_usuario_id):
+  48:         return any(
+  49:             r.livro_id == livro_id
+  50:             and r.usuario_id != excluir_usuario_id
+  51:             and r.esta_ativa()
+  52:             for r in self._reservas.values()
+  53:         )
+  54:
+  55:     def buscar_aguardando_retirada(self, livro_id: int):
+  56:         return []
+  57:
+  58:     def marcar_como_expirada(self, reserva_id: int):
+  59:         if reserva_id in self._reservas:
+  60:             # simula a alteração de status se necessário
+PS C:\Git\emprestimos-biblioteca> # Segurança: mostra o DB_NAME da sessão atual (vazio = não definido)
+PS C:\Git\emprestimos-biblioteca> "DB_NAME=[$env:DB_NAME]"
+DB_NAME=[]
+PS C:\Git\emprestimos-biblioteca> Select-String -Path .env -Pattern "^DB_NAME=" | ForEach-Object { "{0}:{1}: {2}" -f $_.Filename,$_.LineNumber,$_.Line.Trim() } | Out-Host
+.env:1: DB_NAME=emprestimo
+PS C:\Git\emprestimos-biblioteca> # Procura no código onde o banco é escolhido e onde a conexão é aberta
+PS C:\Git\emprestimos-biblioteca> Buscar "DB_NAME|DB_PASS|DATABASE_URL|dbname|psycopg.connect|getenv|load_dotenv" *.py | Out-Host
+C:\Git\emprestimos-biblioteca\api\main.py:4: from dotenv import load_dotenv
+C:\Git\emprestimos-biblioteca\api\main.py:8: load_dotenv(ROOT_DIR / ".env")
+C:\Git\emprestimos-biblioteca\api\main.py:32: host=os.getenv("REDIS_HOST", "localhost"),
+C:\Git\emprestimos-biblioteca\api\main.py:33: port=int(os.getenv("REDIS_PORT", 6379)),
+C:\Git\emprestimos-biblioteca\api\main.py:39: conexao = psycopg.connect(
+C:\Git\emprestimos-biblioteca\api\main.py:40: dbname=os.getenv("DB_NAME"),
+C:\Git\emprestimos-biblioteca\api\main.py:41: user=os.getenv("DB_USER"),
+C:\Git\emprestimos-biblioteca\api\main.py:42: password=os.getenv("DB_PASSWORD"),
+C:\Git\emprestimos-biblioteca\api\main.py:43: host=os.getenv("DB_HOST", "localhost"),
+C:\Git\emprestimos-biblioteca\api\main.py:44: port=os.getenv("DB_PORT", "5432")
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\politica_prazo_remota.py:25: url_servico = os.getenv("SERVICO_PRAZO_URL", "http://127.0.0.1:8001/calcular-prazo")
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\tasks.py:15: senha = os.getenv("DB_PASSWORD") or os.getenv("DB_PASS") or os.getenv("POSTGRES_PASSWORD")
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\tasks.py:17: raise ValueError("Erro de Configuração: A variável de ambiente DB_PASSWORD (ou equivalente) é obrigatória.")
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\tasks.py:27: db_host = os.getenv("DB_HOST", "localhost")
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\tasks.py:28: db_name = os.getenv("DB_NAME", "emprestimo")
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\tasks.py:29: db_user = os.getenv("DB_USER", "postgres")
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\tasks.py:30: db_port = os.getenv("DB_PORT", "5432")
+C:\Git\emprestimos-biblioteca\arquitetura\infraestrutura\tasks.py:33: dbname=db_name,
+C:\Git\emprestimos-biblioteca\arquitetura\teste\testar_expiracao_manual.py:7: db_user = os.getenv("DB_USER", "postgres")
+C:\Git\emprestimos-biblioteca\arquitetura\teste\testar_expiracao_manual.py:8: db_password = os.getenv("DB_PASSWORD") or os.getenv("DB_PASS")
+C:\Git\emprestimos-biblioteca\arquitetura\teste\testar_expiracao_manual.py:9: if not db_password:
+C:\Git\emprestimos-biblioteca\arquitetura\teste\testar_expiracao_manual.py:10: raise ValueError("Erro de Configuração: A variável de ambiente DB_PASSWORD é obrigatória.")
+C:\Git\emprestimos-biblioteca\arquitetura\teste\testar_expiracao_manual.py:12: db_host = os.getenv("DB_HOST", "localhost")
+C:\Git\emprestimos-biblioteca\arquitetura\teste\testar_expiracao_manual.py:13: db_port = os.getenv("DB_PORT", "5432")
+C:\Git\emprestimos-biblioteca\arquitetura\teste\testar_expiracao_manual.py:14: db_name = os.getenv("DB_NAME", "emprestimo")
+C:\Git\emprestimos-biblioteca\arquitetura\teste\testar_expiracao_manual.py:16: DATABASE_URL = os.getenv("DATABASE_URL") or f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+C:\Git\emprestimos-biblioteca\arquitetura\teste\testar_expiracao_manual.py:20: conexao = psycopg2.connect(DATABASE_URL)
+C:\Git\emprestimos-biblioteca\arquitetura\celery_app.py:6: redis_host = os.getenv("REDIS_HOST", "localhost")
+C:\Git\emprestimos-biblioteca\arquitetura\celery_app.py:7: redis_port = os.getenv("REDIS_PORT", "6379")
+C:\Git\emprestimos-biblioteca\arquitetura\diagnostico_erro.py:5: db_host = os.getenv("DB_HOST", "localhost")
+C:\Git\emprestimos-biblioteca\arquitetura\diagnostico_erro.py:6: db_port = int(os.getenv("DB_PORT", 5432))
+C:\Git\emprestimos-biblioteca\arquitetura\diagnostico_erro.py:7: db_user = os.getenv("DB_USER", "postgres")
+C:\Git\emprestimos-biblioteca\arquitetura\diagnostico_erro.py:9: db_password = os.getenv("DB_PASSWORD") or os.getenv("DB_PASS")
+C:\Git\emprestimos-biblioteca\arquitetura\diagnostico_erro.py:10: if not db_password:
+C:\Git\emprestimos-biblioteca\arquitetura\diagnostico_erro.py:11: raise ValueError("Erro de Configuração: A variável de ambiente DB_PASSWORD é obrigatória.")
+C:\Git\emprestimos-biblioteca\arquitetura\diagnostico_erro.py:13: db_name = os.getenv("DB_NAME", "biblioteca")
+C:\Git\emprestimos-biblioteca\arquitetura\diagnostico_erro.py:19: password=db_password,
+C:\Git\emprestimos-biblioteca\arquitetura\diagnostico_erro.py:20: dbname=db_name,
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:11: db_host = os.getenv("DB_HOST", "localhost")
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:12: db_port = int(os.getenv("DB_PORT", 5432))
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:13: db_user = os.getenv("DB_USER", "postgres")
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:15: db_password = os.getenv("DB_PASSWORD") or os.getenv("DB_PASS")
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:16: if not db_password:
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:17: raise ValueError("Erro de Configuração: A variável de ambiente DB_PASSWORD é obrigatória.")
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:19: db_name = os.getenv("DB_NAME", "biblioteca")
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:21: conexao_pg = psycopg.connect(
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:25: password=db_password,
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:26: dbname=db_name
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:29: redis_host = os.getenv("REDIS_HOST", "localhost")
+C:\Git\emprestimos-biblioteca\arquitetura\main.py:30: redis_port = int(os.getenv("REDIS_PORT", 6379))
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:14: db_host = os.getenv("DB_HOST", "localhost")
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:15: db_port = os.getenv("DB_PORT", "5432")
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:16: db_user = os.getenv("DB_USER", "postgres")
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:17: db_name = os.getenv("DB_NAME", "biblioteca")
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:19: db_password = os.getenv("DB_PASSWORD") or os.getenv("DB_PASS")
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:20: if not db_password:
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:21: raise ValueError("Erro de Configuração: A variável de ambiente DB_PASSWORD é obrigatória para este teste.")
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:23: conn_string = f"host={db_host} port={db_port} user={db_user} password={db_password} dbname={db_name}"
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:24: conexao_pg = psycopg.connect(conn_string)
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:26: redis_host = os.getenv("REDIS_HOST", "localhost")
+C:\Git\emprestimos-biblioteca\arquitetura\testar_cache_fluxo.py:27: redis_port = int(os.getenv("REDIS_PORT", 6379))
+PS C:\Git\emprestimos-biblioteca> # Procura configuração do pytest que mude o que ele coleta ou o ambiente
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -File -Include pytest.ini,conftest.py,pyproject.toml,setup.cfg,tox.ini | Where-Object { $_.FullName -notmatch "node_modules|\\\.git\\|venv" } | Select-Object FullName | Out-Host
+
+FullName
+--------
+C:\Git\emprestimos-biblioteca\arquitetura\pytest.ini
+
+
+PS C:\Git\emprestimos-biblioteca> # Mostra o conteúdo do pytest.ini (o que o pytest coleta e como acha os imports)
+PS C:\Git\emprestimos-biblioteca> Get-Content arquitetura\pytest.ini | Out-Host
+[pytest]
+python_files = test_*.py testar_*.py teste_integracao_*.py
+python_functions = test_* testar_*
+testpaths = arquitetura/teste
+markers =
+    unitario: testes puros que rodam em memÃ³ria sem infraestrutura
+    integracao: testes que dependem de banco de dados, Redis ou serviÃ§os externos
+PS C:\Git\emprestimos-biblioteca> # Mostra o início do arquivo de teste que conecta no banco, para confirmar se o connect fica no nível do módulo
+PS C:\Git\emprestimos-biblioteca> Ver-Linhas arquitetura\teste\testar_expiracao_manual.py 1 40 | Out-Host
+   1: import os
+   2: from datetime import datetime, timedelta
+   3: import psycopg2
+   4: from infraestrutura.repositorios_postgres import RepositorioReservaPostgres
+   5: from aplicacao.expirar_reservas_pendentes import expirar_reservas_pendentes
+   6:
+   7: db_user = os.getenv("DB_USER", "postgres")
+   8: db_password = os.getenv("DB_PASSWORD") or os.getenv("DB_PASS")
+   9: if not db_password:
+  10:     raise ValueError("Erro de Configuração: A variável de ambiente DB_PASSWORD é obrigatória.")
+  11:
+  12: db_host = os.getenv("DB_HOST", "localhost")
+  13: db_port = os.getenv("DB_PORT", "5432")
+  14: db_name = os.getenv("DB_NAME", "emprestimo")
+  15:
+  16: DATABASE_URL = os.getenv("DATABASE_URL") or f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+  17:
+  18: def testar_fluxo_expiracao():
+  19:     print("🔌 Conectando ao banco de dados...")
+  20:     conexao = psycopg2.connect(DATABASE_URL)
+  21:
+  22:     try:
+  23:         repositorio = RepositorioReservaPostgres(conexao)
+  24:         aguardando = repositorio.buscar_aguardando_retirada()
+  25:         print(f"📦 Reservas atualmente 'AGUARDANDO_RETIRADA': {len(aguardando)}")
+  26:
+  27:         for r in aguardando:
+  28:             print(f"   - Reserva ID: {r.id} | Notificado em: {r.notificado_em}")
+  29:
+  30:         print("\n⏳ Executando o caso de uso 'expirar_reservas_pendentes'...")
+  31:         ids_expiradas = expirar_reservas_pendentes(
+  32:             repositorio=repositorio,
+  33:             janela=timedelta(hours=48),
+  34:             agora=datetime.now()
+  35:         )
+  36:         print(f"✨ Resultado: {len(ids_expiradas)} reserva(s) foram expiradas nesta execução: {ids_expiradas}")
+  37:
+  38:     finally:
+  39:         conexao.close()
+  40:         print("🔌 Conexão fechada.")
+PS C:\Git\emprestimos-biblioteca> # Informa só True/False se as variáveis de senha existem na sessão, sem mostrar o valor
+PS C:\Git\emprestimos-biblioteca> "DB_PASSWORD definida: $([bool]$env:DB_PASSWORD)"
+DB_PASSWORD definida: False
+PS C:\Git\emprestimos-biblioteca> "DB_PASS definida: $([bool]$env:DB_PASS)"
+DB_PASS definida: False
+PS C:\Git\emprestimos-biblioteca> "DATABASE_URL definida: $([bool]$env:DATABASE_URL)"
+DATABASE_URL definida: False
+PS C:\Git\emprestimos-biblioteca> # Lista os arquivos que casam com os nomes que o pytest costuma coletar (test_*.py e *_test.py), sem importar nada
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -File -Include test_*.py,*_test.py | Where-Object { $_.FullName -notmatch "node_modules|\\\.git\\|venv" } | Select-Object FullName | Out-Host
+
+FullName
+--------
+C:\Git\emprestimos-biblioteca\arquitetura\teste\test_criar_emprestim...
+
+
+PS C:\Git\emprestimos-biblioteca> # Mostra o conteúdo do pytest.ini (python_files, testpaths, pythonpath)
+PS C:\Git\emprestimos-biblioteca> Get-Content arquitetura\pytest.ini | Out-Host
+[pytest]
+python_files = test_*.py testar_*.py teste_integracao_*.py
+python_functions = test_* testar_*
+testpaths = arquitetura/teste
+markers =
+    unitario: testes puros que rodam em memÃ³ria sem infraestrutura
+    integracao: testes que dependem de banco de dados, Redis ou serviÃ§os externos
+PS C:\Git\emprestimos-biblioteca> # Deixa a pasta arquitetura visível para os imports (from dominio...), só nesta sessão
+PS C:\Git\emprestimos-biblioteca> $env:PYTHONPATH = "$PWD\arquitetura"
+PS C:\Git\emprestimos-biblioteca> # Roda só o teste com repositórios falsos (sem banco) e salva a saída; o caminho explícito evita coletar os testar_* e teste_integracao_*
+PS C:\Git\emprestimos-biblioteca> python -m pytest arquitetura\teste\test_criar_emprestimo.py -v 2>&1 | Tee-Object docs\diagnostico\evidencias\pytest-cenario-1.txt
+============================= test session starts =============================
+platform win32 -- Python 3.14.7, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\julia\AppData\Local\Programs\Python\Python314\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Git\emprestimos-biblioteca\arquitetura
+configfile: pytest.ini
+plugins: anyio-4.14.2
+collecting ... collected 7 items
+
+arquitetura\teste\test_criar_emprestimo.py::test_criar_emprestimo_sem_reserva_funciona PASSED [ 14%]
+arquitetura\teste\test_criar_emprestimo.py::test_criar_emprestimo_com_reserva_coerente_funciona PASSED [ 28%]
+arquitetura\teste\test_criar_emprestimo.py::test_criar_emprestimo_com_reserva_de_outro_usuario_falha PASSED [ 42%]
+arquitetura\teste\test_criar_emprestimo.py::test_criar_emprestimo_com_reserva_de_outro_livro_falha PASSED [ 57%]
+arquitetura\teste\test_criar_emprestimo.py::test_criar_emprestimo_com_reserva_cancelada_falha PASSED [ 71%]
+arquitetura\teste\test_criar_emprestimo.py::test_criar_emprestimo_com_reserva_ja_atendida_falha PASSED [ 85%]
+arquitetura\teste\test_criar_emprestimo.py::test_criar_emprestimo_exemplar_ja_emprestado_falha PASSED [100%]
+
+============================== 7 passed in 0.11s ==============================
+PS C:\Git\emprestimos-biblioteca> # Compara as duas definições de "disponível" no mesmo banco
+PS C:\Git\emprestimos-biblioteca> Sql biblioteca_diag "SELECT (SELECT count(*) FROM exemplares WHERE livro_id = 1 AND status = 'DISPONIVEL') AS por_status, (SELECT count(*) FROM exemplares e WHERE e.livro_id = 1 AND e.status = 'ATIVO' AND NOT EXISTS (SELECT 1 FROM emprestimos m WHERE m.exemplar_id = e.id AND m.devolvido_em IS NULL)) AS por_emprestimo_aberto;"
+ por_status | por_emprestimo_aberto 
+------------+-----------------------
+          0 |                     2
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # Encerra a sessão
+PS C:\Git\emprestimos-biblioteca> Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+PS C:\Git\emprestimos-biblioteca> Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+PS C:\Git\emprestimos-biblioteca> Remove-Item Env:DB_NAME -ErrorAction SilentlyContinue
+PS C:\Git\emprestimos-biblioteca> Stop-Transcript
+**********************
+Fim da transcrição do Windows PowerShell
+Hora de término: 20261020150727
+**********************

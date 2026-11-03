@@ -1,0 +1,1282 @@
+﻿**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20261030112531
+Nome de Usuário: DESKTOP-G6SH7L9\julia
+Executar como Usuário: DESKTOP-G6SH7L9\julia
+Nome da Configuração: 
+Computador: DESKTOP-G6SH7L9 (Microsoft Windows NT 10.0.26300.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID do Processo: 9208
+PSVersion: 5.1.26100.9818
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9818
+BuildVersion: 10.0.26100.9818
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é docs\diagnostico\evidencias\cenario-3\cenario-3-parte-1.txt
+PS C:\Git\emprestimos-biblioteca> # Bloco 1 - início 
+PS C:\Git\emprestimos-biblioteca> git branch --show-current
+docs/diagnostico
+PS C:\Git\emprestimos-biblioteca> $env:DB_NAME = "biblioteca_diag"
+PS C:\Git\emprestimos-biblioteca> $env:PYTHONPATH = "$PWD\arquitetura"
+PS C:\Git\emprestimos-biblioteca> $env:PYTHONIOENCODING = "utf-8"
+PS C:\Git\emprestimos-biblioteca> $senha = Read-Host "Senha do postgres" -AsSecureString
+PS C:\Git\emprestimos-biblioteca> $env:DB_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($senha))
+PS C:\Git\emprestimos-biblioteca> $env:DB_PASS = $env:DB_PASSWORD
+PS C:\Git\emprestimos-biblioteca> $env:PGPASSWORD = $env:DB_PASSWORD
+PS C:\Git\emprestimos-biblioteca> $psql = "C:\Program Files\PostgreSQL\18\bin\psql.exe"
+PS C:\Git\emprestimos-biblioteca> function Rodar-Psql([string]$Sql) { & $psql -U postgres -d $env:DB_NAME -c $Sql 2>&1 | Out-String | Write-Host }
+PS C:\Git\emprestimos-biblioteca> function Rodar-Redis { python -c "import redis; r=redis.Redis(host='localhost', port=6379, socket_connect_timeout=3); print('PING:', r.ping()); print('chaves:', r.keys('disponibilidade:*')); print('TTL livro 1:', r.ttl('disponibilidade:livro:1')); print('valor livro 1:', r.get('disponibilidade:livro:1'))" 2>&1 | Out-String | Write-Host }
+PS C:\Git\emprestimos-biblioteca> "DB_NAME   = $env:DB_NAME"
+DB_NAME   = biblioteca_diag
+PS C:\Git\emprestimos-biblioteca> "PYTHONPATH= $env:PYTHONPATH"
+PYTHONPATH= C:\Git\emprestimos-biblioteca\arquitetura
+PS C:\Git\emprestimos-biblioteca> "Senhas definidas: " + [bool]($env:DB_PASSWORD -and $env:DB_PASS -and $env:PGPASSWORD)
+Senhas definidas: True
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "SELECT current_database();"
+ current_database 
+------------------
+ biblioteca_diag
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> # Bloco 2 - Assinaturas do código
+PS C:\Git\emprestimos-biblioteca> Set-Location C:\Git\emprestimos-biblioteca\arquitetura
+PS C:\Git\emprestimos-biblioteca\arquitetura> foreach ($f in "aplicacao\criar_emprestimo.py","aplicacao\devolver_exemplar.py","dominio\politica_prazo.py","dominio\emprestimo.py","dominio\repositorios.py","dominio\reserva.py","dominio\exemplar.py","infraestrutura\repositorios_postgres.py","infraestrutura\cache_keys.py","infraestrutura\repositorio_exemplares_cache.py","main.py") {
+  "===== $f ====="
+  $i = 0; Get-Content $f -Encoding UTF8 | ForEach-Object { $i++; "{0,4}: {1}" -f $i, $_ }
+}
+===== aplicacao\criar_emprestimo.py =====
+   1: # Busca exemplar, busca reserva, monta o Emprestimo e salva.
+   2:
+   3: from datetime import datetime, timedelta
+   4: from typing import Optional
+   5:
+   6: from dominio.repositorios import (
+   7:     RepositorioExemplar,
+   8:     RepositorioReserva,
+   9:     RepositorioEmprestimo,
+  10: )
+  11: from dominio.emprestimo import Emprestimo
+  12: from dominio.politica_prazo import PoliticaPrazo
+  13:
+  14:
+  15: class ExemplarIndisponivelError(Exception):
+  16:     """Levantada quando o exemplar não existe, não está ATIVO ou já está emprestado."""
+  17:
+  18:
+  19: class CriarEmprestimo:
+  20:     def __init__(
+  21:         self,
+  22:         repo_exemplar: RepositorioExemplar,
+  23:         repo_reserva: RepositorioReserva,
+  24:         repo_emprestimo: RepositorioEmprestimo,
+  25:         politica_prazo: PoliticaPrazo,
+  26:     ):
+  27:         self._repo_exemplar = repo_exemplar
+  28:         self._repo_reserva = repo_reserva
+  29:         self._repo_emprestimo = repo_emprestimo
+  30:         self._politica_prazo = politica_prazo
+  31:
+  32:     def executar(
+  33:         self,
+  34:         usuario_id: int,
+  35:         exemplar_id: int,
+  36:         livro_id: int,
+  37:         reserva_id: Optional[int] = None,
+  38:     ) -> Emprestimo:
+  39:         exemplar = self._repo_exemplar.buscar_por_id(exemplar_id)
+  40:         if exemplar is None or not exemplar.esta_ativo():
+  41:             raise ExemplarIndisponivelError(
+  42:                 f"Exemplar {exemplar_id} não existe ou não está ATIVO."
+  43:             )
+  44:
+  45:         if self._repo_emprestimo.existe_emprestimo_ativo_para_exemplar(exemplar_id):
+  46:             raise ExemplarIndisponivelError(
+  47:                 f"Exemplar {exemplar_id} já está emprestado."
+  48:             )
+  49:
+  50:         reserva = None
+  51:         if reserva_id is not None:
+  52:             reserva = self._repo_reserva.buscar_por_id(reserva_id)
+  53:             if reserva is None:
+  54:                 raise ValueError(f"Reserva {reserva_id} não encontrada.")
+  55:
+  56:         emprestado_em = datetime.now()
+  57:         dias = self._politica_prazo.calcular_dias(usuario_id, livro_id)
+  58:         prevista_devolucao_em = emprestado_em + timedelta(days=dias)
+  59:
+  60:         emprestimo = Emprestimo(
+  61:             id=None,
+  62:             usuario_id=usuario_id,
+  63:             exemplar_id=exemplar_id,
+  64:             livro_id=livro_id,
+  65:             emprestado_em=emprestado_em,
+  66:             prevista_devolucao_em=prevista_devolucao_em,
+  67:             reserva=reserva,
+  68:         )
+  69:
+  70:         emprestimo_salvo = self._repo_emprestimo.salvar(emprestimo)
+  71:
+  72:         # Invalidação agora ocorre de forma transparente através da interface do repositório
+  73:         self._repo_exemplar.invalidar_disponibilidade(livro_id)
+  74:
+  75:         return emprestimo_salvo
+===== aplicacao\devolver_exemplar.py =====
+   1: from datetime import datetime
+   2:
+   3:
+   4: class DevolverExemplar:
+   5:     def __init__(
+   6:         self,
+   7:         repo_emprestimo,
+   8:         repo_exemplar,
+   9:     ):
+  10:         self._repo_emprestimo = repo_emprestimo
+  11:         self._repo_exemplar = repo_exemplar
+  12:
+  13:     def executar(self, emprestimo_id: int) -> None:
+  14:         """Registra a devolução, descobre o livro afetado e invalida o cache."""
+  15:
+  16:         # 1. Busca o empréstimo para validar existência e obter o ID do exemplar
+  17:         emprestimo = self._repo_emprestimo.buscar_por_id(emprestimo_id)
+  18:         if emprestimo is None:
+  19:             raise ValueError(f"Empréstimo {emprestimo_id} não encontrado.")
+  20:
+  21:         # 2. Registra a devolução no repositório
+  22:         self._repo_emprestimo.marcar_como_devolvido(emprestimo_id, datetime.now())
+  23:
+  24:         # 3. Descobre o livro através do exemplar para solicitar a invalidação ao repositório
+  25:         exemplar = self._repo_exemplar.buscar_por_id(emprestimo.exemplar_id)
+  26:         if exemplar:
+  27:             self._repo_exemplar.invalidar_disponibilidade(exemplar.livro_id)
+===== dominio\politica_prazo.py =====
+   1: # Strategy: calcula quantos dias um Emprestimo tem até a devolução prevista.
+   2: # Existe porque o prazo não pode mais ser um int fixo — depende de contexto de negócio.
+   3:
+   4: from abc import ABC, abstractmethod
+   5:
+   6: from dominio.repositorios import RepositorioReserva
+   7:
+   8:
+   9: class PoliticaPrazo(ABC):
+  10:     @abstractmethod
+  11:     def calcular_dias(self, usuario_id: int, livro_id: int) -> int:
+  12:         ...
+  13:
+  14:
+  15: class PrazoPadrao(PoliticaPrazo):
+  16:     """Prazo fixo, sem considerar contexto. Comportamento atual do sistema."""
+  17:
+  18:     def __init__(self, dias: int = 14):
+  19:         self._dias = dias
+  20:
+  21:     def calcular_dias(self, usuario_id: int, livro_id: int) -> int:
+  22:         return self._dias
+  23:
+  24:
+  25: class PrazoComFilaDeReserva(PoliticaPrazo):
+  26:     """Encurta o prazo se houver reserva ativa de outro usuário
+  27:     esperando pelo mesmo livro — libera o exemplar mais rápido."""
+  28:
+  29:     def __init__(
+  30:         self,
+  31:         repo_reserva: RepositorioReserva,
+  32:         dias_padrao: int = 14,
+  33:         dias_com_fila: int = 7,
+  34:     ):
+  35:         self._repo_reserva = repo_reserva
+  36:         self._dias_padrao = dias_padrao
+  37:         self._dias_com_fila = dias_com_fila
+  38:
+  39:     def calcular_dias(self, usuario_id: int, livro_id: int) -> int:
+  40:         if self._repo_reserva.existe_reserva_pendente_para_livro(
+  41:             livro_id, excluir_usuario_id=usuario_id
+  42:         ):
+  43:             return self._dias_com_fila
+  44:         return self._dias_padrao
+===== dominio\emprestimo.py =====
+   1: # Valida a invariante central:
+   2: # reserva vinculada precisa ser do mesmo usuário e livro.
+   3:
+   4: from datetime import datetime
+   5: from typing import Optional
+   6:
+   7: from dominio.reserva import Reserva
+   8:
+   9: class Emprestimo:
+  10:     def __init__(
+  11:         self,
+  12:         id: Optional[int],
+  13:         usuario_id: int,
+  14:         exemplar_id: int,
+  15:         livro_id: int,
+  16:         emprestado_em: datetime,
+  17:         prevista_devolucao_em: datetime,
+  18:         devolvido_em: Optional[datetime] = None,
+  19:         reserva: Optional[Reserva] = None,
+  20:     ):
+  21:         if usuario_id is None or exemplar_id is None or livro_id is None:
+  22:             raise ValueError(
+  23:                 "Emprestimo precisa de usuario_id, exemplar_id e livro_id."
+  24:             )
+  25:
+  26:         if prevista_devolucao_em <= emprestado_em:
+  27:             raise ValueError(
+  28:                 "prevista_devolucao_em precisa ser depois de emprestado_em."
+  29:             )
+  30:
+  31:         # Invariante central
+  32:         if reserva is not None:
+  33:             self._validar_coerencia_com_reserva(reserva, usuario_id, livro_id)
+  34:
+  35:         self.id = id
+  36:         self.usuario_id = usuario_id
+  37:         self.exemplar_id = exemplar_id
+  38:         self.livro_id = livro_id
+  39:         self.emprestado_em = emprestado_em
+  40:         self.prevista_devolucao_em = prevista_devolucao_em
+  41:         self.devolvido_em = devolvido_em
+  42:         self.reserva_id = reserva.id if reserva else None
+  43:
+  44:     @staticmethod
+  45:     def _validar_coerencia_com_reserva(
+  46:         reserva: Reserva, usuario_id: int, livro_id: int
+  47:     ) -> None:
+  48:         if not reserva.esta_ativa():
+  49:             raise ValueError(
+  50:                 f"Reserva {reserva.id} está com status {reserva.status} "
+  51:                 "e não pode gerar um empréstimo (só PENDENTE ou "
+  52:                 "AGUARDANDO_RETIRADA podem)."
+  53:             )
+  54:         if reserva.usuario_id != usuario_id:
+  55:             raise ValueError(
+  56:                 f"Reserva {reserva.id} pertence ao usuario {reserva.usuario_id}, "
+  57:                 f"não ao usuario {usuario_id} deste empréstimo."
+  58:             )
+  59:         if reserva.livro_id != livro_id:
+  60:             raise ValueError(
+  61:                 f"Reserva {reserva.id} é do livro {reserva.livro_id}, "
+  62:                 f"não do livro {livro_id} deste empréstimo."
+  63:             )
+  64:
+  65:     def esta_ativo(self) -> bool:
+  66:         return self.devolvido_em is None
+  67:
+  68:     def registrar_devolucao(self, devolvido_em: datetime) -> None:
+  69:         if self.devolvido_em is not None:
+  70:             raise ValueError(f"Emprestimo {self.id} já foi devolvido.")
+  71:         if devolvido_em < self.emprestado_em:
+  72:             raise ValueError("Data de devolução não pode ser anterior ao empréstimo.")
+  73:         self.devolvido_em = devolvido_em
+  74:
+  75:     def __repr__(self):
+  76:         return (
+  77:             f"Emprestimo(id={self.id}, usuario_id={self.usuario_id}, "
+  78:             f"exemplar_id={self.exemplar_id}, reserva_id={self.reserva_id})"
+  79:         )
+===== dominio\repositorios.py =====
+   1: # dominio/repositorios.py
+   2:
+   3: # Interfaces abstratas (contratos)
+   4: # que dizem o que cada repositório precisa saber fazer
+   5: from abc import ABC, abstractmethod
+   6: from typing import Optional
+   7:
+   8: from dominio.usuario import Usuario
+   9: from dominio.livro import Livro
+  10: from dominio.exemplar import Exemplar
+  11: from dominio.reserva import Reserva
+  12: from dominio.emprestimo import Emprestimo
+  13:
+  14:
+  15: class RepositorioUsuario(ABC):
+  16:     @abstractmethod
+  17:     def buscar_por_id(self, usuario_id: int) -> Optional[Usuario]:
+  18:         ...
+  19:
+  20:
+  21: class RepositorioLivro(ABC):
+  22:     @abstractmethod
+  23:     def buscar_por_id(self, livro_id: int) -> Optional[Livro]:
+  24:         ...
+  25:
+  26:
+  27: class RepositorioExemplar(ABC):
+  28:     @abstractmethod
+  29:     def buscar_por_id(self, exemplar_id: int) -> Optional[Exemplar]:
+  30:         ...
+  31:
+  32:     @abstractmethod
+  33:     def esta_disponivel(self, exemplar_id: int) -> bool:
+  34:         ...
+  35:
+  36:     @abstractmethod
+  37:     def buscar_disponibilidade(self, livro_id: int) -> dict:
+  38:         """Retorna a contagem total e disponíveis para o livro."""
+  39:         ...
+  40:
+  41:     @abstractmethod
+  42:     def invalidar_disponibilidade(self, livro_id: int) -> None:
+  43:         """
+  44:         Invalida qualquer dado de disponibilidade em cache referente a este livro.
+  45:         Implementações sem cache podem simplesmente não fazer nada (pass).
+  46:         """
+  47:         ...
+  48:
+  49:
+  50: class RepositorioReserva(ABC):
+  51:     @abstractmethod
+  52:     def buscar_por_id(self, reserva_id: int) -> Optional[Reserva]:
+  53:         ...
+  54:
+  55:     @abstractmethod
+  56:     def existe_reserva_pendente_para_livro(
+  57:         self, livro_id: int, excluir_usuario_id: int
+  58:     ) -> bool:
+  59:         ...
+  60:
+  61:     @abstractmethod
+  62:     def buscar_aguardando_retirada(self) -> list[Reserva]:
+  63:         ...
+  64:
+  65:     @abstractmethod
+  66:     def marcar_como_expirada(self, reserva_id: int) -> None:
+  67:         ...
+  68:
+  69:
+  70: class RepositorioEmprestimo(ABC):
+  71:     @abstractmethod
+  72:     def salvar(self, emprestimo: Emprestimo) -> Emprestimo:
+  73:         ...
+  74:
+  75:     @abstractmethod
+  76:     def existe_emprestimo_ativo_para_exemplar(self, exemplar_id: int) -> bool:
+  77:         ...
+===== dominio\reserva.py =====
+   1: # Guarda o status da fila
+   2: # PENDENTE, AGUARDANDO_RETIRADA etc.
+   3: # e diz se ainda está ativa.
+   4:
+   5: from enum import Enum
+   6: from datetime import datetime, timedelta
+   7:
+   8: class StatusReserva(str, Enum):
+   9:     PENDENTE = "PENDENTE"
+  10:     AGUARDANDO_RETIRADA = "AGUARDANDO_RETIRADA"
+  11:     ATENDIDA = "ATENDIDA"
+  12:     EXPIRADA = "EXPIRADA"
+  13:     CANCELADA = "CANCELADA"
+  14:
+  15: _STATUS_ATIVOS = {StatusReserva.PENDENTE, StatusReserva.AGUARDANDO_RETIRADA}
+  16:
+  17: class Reserva:
+  18:     def __init__(
+  19:         self,
+  20:         id: int,
+  21:         usuario_id: int,
+  22:         livro_id: int,
+  23:         criado_em: datetime,
+  24:         status: StatusReserva = StatusReserva.PENDENTE,
+  25:         notificado_em: datetime | None = None,
+  26:     ):
+  27:         if usuario_id is None or livro_id is None:
+  28:             raise ValueError("Reserva precisa de usuario_id e livro_id.")
+  29:
+  30:         self.id = id
+  31:         self.usuario_id = usuario_id
+  32:         self.livro_id = livro_id
+  33:         self.criado_em = criado_em
+  34:         self.status = status
+  35:         self.notificado_em = notificado_em
+  36:
+  37:     def esta_ativa(self) -> bool:
+  38:         return self.status in _STATUS_ATIVOS
+  39:
+  40:     def __repr__(self):
+  41:         return (
+  42:             f"Reserva(id={self.id}, usuario_id={self.usuario_id}, "
+  43:             f"livro_id={self.livro_id}, status={self.status})"
+  44:         )
+  45:     def esta_expirada(self, janela: timedelta, agora: datetime) -> bool:
+  46:         """Verifica se a reserva está aguardando retirada e ultrapassou o prazo limite."""
+  47:         if self.status != StatusReserva.AGUARDANDO_RETIRADA:
+  48:             return False
+  49:         if self.notificado_em is None:
+  50:             return False
+  51:         return agora >= self.notificado_em + janela
+===== dominio\exemplar.py =====
+   1: # Cópia física: guarda o status ATIVO/BAIXADO/PERDIDO.
+   2:
+   3: from enum import Enum
+   4:
+   5: class StatusExemplar(str, Enum):
+   6:     ATIVO = "ATIVO"
+   7:     BAIXADO = "BAIXADO"
+   8:     PERDIDO = "PERDIDO"
+   9:
+  10: class Exemplar:
+  11:     def __init__(self, id: int, livro_id: int, status: StatusExemplar = StatusExemplar.ATIVO):
+  12:         if livro_id is None:
+  13:             raise ValueError("Exemplar precisa estar vinculado a um livro_id.")
+  14:
+  15:         self.id = id
+  16:         self.livro_id = livro_id
+  17:         self.status = status
+  18:
+  19:     def esta_ativo(self) -> bool:
+  20:         # Só um exemplar ATIVO pode, em tese, ser emprestado
+  21:         return self.status == StatusExemplar.ATIVO
+  22:
+  23:     def __repr__(self):
+  24:         return f"Exemplar(id={self.id}, livro_id={self.livro_id}, status={self.status})"
+===== infraestrutura\repositorios_postgres.py =====
+   1: # Implementação real dos repositórios,
+   2: # com SQL de verdade contra o schema PostgreSQL.
+   3:
+   4: from typing import Optional
+   5:
+   6: from psycopg import Connection as PgConnection
+   7:
+   8: from dominio.usuario import Usuario
+   9: from dominio.livro import Livro
+  10: from dominio.exemplar import Exemplar, StatusExemplar
+  11: from dominio.reserva import Reserva, StatusReserva
+  12: from dominio.emprestimo import Emprestimo
+  13: from dominio.repositorios import (
+  14:     RepositorioUsuario,
+  15:     RepositorioLivro,
+  16:     RepositorioExemplar,
+  17:     RepositorioReserva,
+  18:     RepositorioEmprestimo,
+  19: )
+  20:
+  21:
+  22: class RepositorioExemplarPostgres(RepositorioExemplar):
+  23:     def __init__(self, conexao: PgConnection):
+  24:         self._conexao = conexao
+  25:
+  26:     def buscar_disponibilidade(self, livro_id: int) -> dict:
+  27:         """Busca a contagem de exemplares totais e disponíveis para um livro."""
+  28:         with self._conexao.cursor() as cursor:
+  29:             cursor.execute(
+  30:                 """
+  31:                 SELECT
+  32:                     COUNT(*) AS total,
+  33:                     COUNT(*) FILTER (WHERE status = 'DISPONIVEL') AS disponiveis
+  34:                 FROM exemplares
+  35:                 WHERE livro_id = %s;
+  36:                 """,
+  37:                 (livro_id,)
+  38:             )
+  39:             row = cursor.fetchone()
+  40:
+  41:             if row:
+  42:                 total = row[0] if isinstance(row, tuple) else row['total']
+  43:                 disponiveis = row[1] if isinstance(row, tuple) else row['disponiveis']
+  44:             else:
+  45:                 total, disponiveis = 0, 0
+  46:
+  47:             return {
+  48:                 "livro_id": livro_id,
+  49:                 "total": total,
+  50:                 "disponiveis": disponiveis,
+  51:                 "em_estoque": disponiveis > 0
+  52:             }
+  53:
+  54:     def buscar_por_id(self, exemplar_id: int) -> Optional[Exemplar]:
+  55:         with self._conexao.cursor() as cur:
+  56:             cur.execute(
+  57:                 "SELECT id, livro_id, status FROM exemplares WHERE id = %s",
+  58:                 (exemplar_id,),
+  59:             )
+  60:             linha = cur.fetchone()
+  61:             if linha is None:
+  62:                 return None
+  63:             return Exemplar(
+  64:                 id=linha[0], livro_id=linha[1], status=StatusExemplar(linha[2])
+  65:             )
+  66:
+  67:     def esta_disponivel(self, exemplar_id: int) -> bool:
+  68:         with self._conexao.cursor() as cur:
+  69:             cur.execute(
+  70:                 """
+  71:                 SELECT NOT EXISTS (
+  72:                     SELECT 1 FROM emprestimos
+  73:                     WHERE exemplar_id = %s AND devolvido_em IS NULL
+  74:                 )
+  75:                 """,
+  76:                 (exemplar_id,),
+  77:             )
+  78:             (disponivel,) = cur.fetchone()
+  79:             return disponivel
+  80:
+  81:     def invalidar_disponibilidade(self, livro_id: int) -> None:
+  82:         """
+  83:         O repositório PostgreSQL puro não gerencia cache em memória/Redis,
+  84:         portanto esta implementação é vazia, mas necessária para satisfazer o contrato da interface.
+  85:         """
+  86:         pass
+  87:
+  88:
+  89: class RepositorioLivroPostgres(RepositorioLivro):
+  90:     def __init__(self, conexao: PgConnection):
+  91:         self._conexao = conexao
+  92:
+  93:     def buscar_por_id(self, livro_id: int) -> Optional[Livro]:
+  94:         with self._conexao.cursor() as cur:
+  95:             cur.execute(
+  96:                 "SELECT id, titulo, isbn FROM livros WHERE id = %s",
+  97:                 (livro_id,),
+  98:             )
+  99:             linha = cur.fetchone()
+ 100:             if linha is None:
+ 101:                 return None
+ 102:             return Livro(id=linha[0], titulo=linha[1], isbn=linha[2])
+ 103:
+ 104:
+ 105: class RepositorioReservaPostgres(RepositorioReserva):
+ 106:     def __init__(self, conexao: PgConnection):
+ 107:         self._conexao = conexao
+ 108:
+ 109:     def buscar_por_id(self, reserva_id: int) -> Optional[Reserva]:
+ 110:         with self._conexao.cursor() as cur:
+ 111:             cur.execute(
+ 112:                 """
+ 113:                 SELECT id, usuario_id, livro_id, criado_em,
+ 114:                        status, notificado_em
+ 115:                 FROM reservas WHERE id = %s
+ 116:                 """,
+ 117:                 (reserva_id,),
+ 118:             )
+ 119:             linha = cur.fetchone()
+ 120:             if linha is None:
+ 121:                 return None
+ 122:             return Reserva(
+ 123:                 id=linha[0],
+ 124:                 usuario_id=linha[1],
+ 125:                 livro_id=linha[2],
+ 126:                 criado_em=linha[3],
+ 127:                 status=StatusReserva(linha[4]),
+ 128:                 notificado_em=linha[5],
+ 129:             )
+ 130:
+ 131:     def existe_reserva_pendente_para_livro(
+ 132:         self, livro_id: int, excluir_usuario_id: int
+ 133:     ) -> bool:
+ 134:         with self._conexao.cursor() as cur:
+ 135:             cur.execute(
+ 136:                 """
+ 137:                 SELECT EXISTS (
+ 138:                     SELECT 1 FROM reservas
+ 139:                     WHERE livro_id = %s
+ 140:                       AND usuario_id <> %s
+ 141:                       AND status IN ('PENDENTE', 'AGUARDANDO_RETIRADA')
+ 142:                 )
+ 143:                 """,
+ 144:                 (livro_id, excluir_usuario_id),
+ 145:             )
+ 146:             (existe,) = cur.fetchone()
+ 147:             return existe
+ 148:
+ 149:     def buscar_aguardando_retirada(self) -> list[Reserva]:
+ 150:         with self._conexao.cursor() as cur:
+ 151:             cur.execute(
+ 152:                 """
+ 153:                 SELECT id, usuario_id, livro_id, criado_em,
+ 154:                        status, notificado_em
+ 155:                 FROM reservas WHERE status = 'AGUARDANDO_RETIRADA'
+ 156:                 """
+ 157:             )
+ 158:             linhas = cur.fetchall()
+ 159:             return [
+ 160:                 Reserva(
+ 161:                     id=linha[0],
+ 162:                     usuario_id=linha[1],
+ 163:                     livro_id=linha[2],
+ 164:                     criado_em=linha[3],
+ 165:                     status=StatusReserva(linha[4]),
+ 166:                     notificado_em=linha[5],
+ 167:                 )
+ 168:                 for linha in linhas
+ 169:             ]
+ 170:
+ 171:     def marcar_como_expirada(self, reserva_id: int) -> None:
+ 172:         with self._conexao.cursor() as cur:
+ 173:             cur.execute(
+ 174:                 """
+ 175:                 UPDATE reservas
+ 176:                 SET status = 'EXPIRADA'
+ 177:                 WHERE id = %s
+ 178:                 """,
+ 179:                 (reserva_id,),
+ 180:             )
+ 181:             self._conexao.commit()
+ 182:
+ 183:
+ 184: class RepositorioEmprestimoPostgres(RepositorioEmprestimo):
+ 185:     def __init__(self, conexao: PgConnection):
+ 186:         self._conexao = conexao
+ 187:
+ 188:     def existe_emprestimo_ativo_para_exemplar(self, exemplar_id: int) -> bool:
+ 189:         with self._conexao.cursor() as cur:
+ 190:             cur.execute(
+ 191:                 """
+ 192:                 SELECT EXISTS (
+ 193:                     SELECT 1 FROM emprestimos
+ 194:                     WHERE exemplar_id = %s AND devolvido_em IS NULL
+ 195:                 )
+ 196:                 """,
+ 197:                 (exemplar_id,),
+ 198:             )
+ 199:             (existe,) = cur.fetchone()
+ 200:             return existe
+ 201:
+ 202:     def salvar(self, emprestimo: Emprestimo) -> Emprestimo:
+ 203:         with self._conexao.cursor() as cur:
+ 204:             cur.execute(
+ 205:                 """
+ 206:                 INSERT INTO emprestimos
+ 207:                     (usuario_id, exemplar_id, emprestado_em,
+ 208:                      prevista_devolucao_em, reserva_id)
+ 209:                 VALUES (%s, %s, %s, %s, %s)
+ 210:                 RETURNING id
+ 211:                 """,
+ 212:                 (
+ 213:                     emprestimo.usuario_id,
+ 214:                     emprestimo.exemplar_id,
+ 215:                     emprestimo.emprestado_em,
+ 216:                     emprestimo.prevista_devolucao_em,
+ 217:                     emprestimo.reserva_id,
+ 218:                 ),
+ 219:             )
+ 220:             (novo_id,) = cur.fetchone()
+ 221:             self._conexao.commit()
+ 222:             emprestimo.id = novo_id
+ 223:             return emprestimo
+===== infraestrutura\cache_keys.py =====
+   1: def chave_disponibilidade(livro_id: int) -> str:
+   2:     """Retorna a chave padronizada para o cache de disponibilidade de um livro."""
+   3:     return f"disponibilidade:livro:{livro_id}"
+===== infraestrutura\repositorio_exemplares_cache.py =====
+   1: import json
+   2: from typing import Optional
+   3: from dominio.exemplar import Exemplar
+   4: from dominio.repositorios import RepositorioExemplar
+   5: from infraestrutura.cache_keys import chave_disponibilidade
+   6:
+   7:
+   8: class RepositorioExemplarCache(RepositorioExemplar):
+   9:     def __init__(self, repositorio_real: RepositorioExemplar, redis_client, ttl: int = 60):
+  10:         self.repositorio_real = repositorio_real
+  11:         self.redis = redis_client
+  12:         self.ttl = ttl
+  13:
+  14:     def _chave_cache(self, livro_id: int) -> str:
+  15:         return chave_disponibilidade(livro_id)
+  16:
+  17:     def buscar_disponibilidade(self, livro_id: int) -> dict:
+  18:         chave = self._chave_cache(livro_id)
+  19:
+  20:         # 1. Tenta buscar no Cache (Redis)
+  21:         dados_cached = self.redis.get(chave)
+  22:         if dados_cached:
+  23:             return json.loads(dados_cached)
+  24:
+  25:         # 2. Cache Miss: Busca no banco de dados real
+  26:         resultado = self.repositorio_real.buscar_disponibilidade(livro_id)
+  27:
+  28:         # 3. Salva no Redis com TTL configurado
+  29:         self.redis.setex(
+  30:             name=chave,
+  31:             time=self.ttl,
+  32:             value=json.dumps(resultado)
+  33:         )
+  34:
+  35:         return resultado
+  36:
+  37:     def invalidar_disponibilidade(self, livro_id: int) -> None:
+  38:         """Invalida a chave do livro no Redis ao ocorrer alteração de estado."""
+  39:         chave = self._chave_cache(livro_id)
+  40:         self.redis.delete(chave)
+  41:
+  42:     # Delegando métodos de leitura diretamente para o repositório real
+  43:     def buscar_por_id(self, exemplar_id: int) -> Optional[Exemplar]:
+  44:         return self.repositorio_real.buscar_por_id(exemplar_id)
+  45:
+  46:     def esta_disponivel(self, exemplar_id: int) -> bool:
+  47:         return self.repositorio_real.esta_disponivel(exemplar_id)
+  48:
+  49:     # --- MÉTODOS DE ESCRITA / MUTAÇÃO NO DECORATOR ---
+  50:     # Se o seu RepositorioExemplar possui métodos que salvam ou alteram o estado do exemplar:
+  51:
+  52:     def salvar(self, exemplar: Exemplar) -> Exemplar:
+  53:         """Salva a alteração no banco e invalida o cache do livro correspondente."""
+  54:         exemplar_salvo = self.repositorio_real.salvar(exemplar)
+  55:         # O Decorator garante a invalidação sem que o Caso de Uso precise saber
+  56:         self.invalidar_disponibilidade(exemplar.livro_id)
+  57:         return exemplar_salvo
+===== main.py =====
+   1: import os
+   2: import redis
+   3: import psycopg
+   4:
+   5: from infraestrutura.repositorios_postgres import RepositorioExemplarPostgres
+   6: from infraestrutura.repositorio_exemplares_cache import RepositorioExemplarCache
+   7: from aplicacao.consultar_disponibilidade import ConsultarDisponibilidade
+   8:
+   9:
+  10: def bootstrap():
+  11:     db_host = os.getenv("DB_HOST", "localhost")
+  12:     db_port = int(os.getenv("DB_PORT", 5432))
+  13:     db_user = os.getenv("DB_USER", "postgres")
+  14:
+  15:     db_password = os.getenv("DB_PASSWORD") or os.getenv("DB_PASS")
+  16:     if not db_password:
+  17:         raise ValueError("Erro de Configuração: A variável de ambiente DB_PASSWORD é obrigatória.")
+  18:
+  19:     db_name = os.getenv("DB_NAME", "biblioteca")
+  20:
+  21:     conexao_pg = psycopg.connect(
+  22:         host=db_host,
+  23:         port=db_port,
+  24:         user=db_user,
+  25:         password=db_password,
+  26:         dbname=db_name
+  27:     )
+  28:
+  29:     redis_host = os.getenv("REDIS_HOST", "localhost")
+  30:     redis_port = int(os.getenv("REDIS_PORT", 6379))
+  31:
+  32:     redis_client = redis.Redis(
+  33:         host=redis_host,
+  34:         port=redis_port,
+  35:         db=0,
+  36:         decode_responses=True
+  37:     )
+  38:
+  39:     repo_postgres = RepositorioExemplarPostgres(conexao=conexao_pg)
+  40:     repo_exemplares_com_cache = RepositorioExemplarCache(
+  41:         repositorio_real=repo_postgres,
+  42:         redis_client=redis_client,
+  43:         ttl=60
+  44:     )
+  45:
+  46:     caso_de_uso_consulta = ConsultarDisponibilidade(repo_exemplar=repo_exemplares_com_cache)
+  47:     return caso_de_uso_consulta
+  48:
+  49:
+  50: if __name__ == "__main__":
+  51:     consulta = bootstrap()
+  52:     resultado = consulta.executar(livro_id=1)
+  53:     print("Resultado da consulta:", resultado)
+PS C:\Git\emprestimos-biblioteca\arquitetura> Set-Location C:\Git\emprestimos-biblioteca
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -Include *.py | Where-Object { $_.FullName -notmatch 'venv|node_modules|site-packages' } |
+  Select-String -Pattern "psycopg.connect|\.connect\(|DB_HOST|DB_USER|DB_PORT|DB_NAME|redis\.|Redis\(" |
+  ForEach-Object { "{0}:{1}: {2}" -f $_.Path.Replace("C:\Git\emprestimos-biblioteca\",""), $_.LineNumber, $_.Line.Trim() }
+api\main.py:31: redis_client = redis.Redis(
+api\main.py:39: conexao = psycopg.connect(
+api\main.py:40: dbname=os.getenv("DB_NAME"),
+api\main.py:41: user=os.getenv("DB_USER"),
+api\main.py:43: host=os.getenv("DB_HOST", "localhost"),
+api\main.py:44: port=os.getenv("DB_PORT", "5432")
+arquitetura\infraestrutura\repositorio_exemplares_cache.py:21: dados_cached = self.redis.get(chave)
+arquitetura\infraestrutura\repositorio_exemplares_cache.py:29: self.redis.setex(
+arquitetura\infraestrutura\repositorio_exemplares_cache.py:40: self.redis.delete(chave)
+arquitetura\infraestrutura\tasks.py:27: db_host = os.getenv("DB_HOST", "localhost")
+arquitetura\infraestrutura\tasks.py:28: db_name = os.getenv("DB_NAME", "emprestimo")
+arquitetura\infraestrutura\tasks.py:29: db_user = os.getenv("DB_USER", "postgres")
+arquitetura\infraestrutura\tasks.py:30: db_port = os.getenv("DB_PORT", "5432")
+arquitetura\infraestrutura\tasks.py:32: conexao = psycopg2.connect(
+arquitetura\infraestrutura\tasks.py:33: dbname=db_name,
+arquitetura\infraestrutura\tasks.py:34: user=db_user,
+arquitetura\infraestrutura\tasks.py:36: host=db_host,
+arquitetura\infraestrutura\tasks.py:37: port=db_port
+arquitetura\teste\testar_expiracao_manual.py:7: db_user = os.getenv("DB_USER", "postgres")
+arquitetura\teste\testar_expiracao_manual.py:12: db_host = os.getenv("DB_HOST", "localhost")
+arquitetura\teste\testar_expiracao_manual.py:13: db_port = os.getenv("DB_PORT", "5432")
+arquitetura\teste\testar_expiracao_manual.py:14: db_name = os.getenv("DB_NAME", "emprestimo")
+arquitetura\teste\testar_expiracao_manual.py:16: DATABASE_URL = os.getenv("DATABASE_URL") or f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+arquitetura\teste\testar_expiracao_manual.py:20: conexao = psycopg2.connect(DATABASE_URL)
+arquitetura\diagnostico_erro.py:5: db_host = os.getenv("DB_HOST", "localhost")
+arquitetura\diagnostico_erro.py:6: db_port = int(os.getenv("DB_PORT", 5432))
+arquitetura\diagnostico_erro.py:7: db_user = os.getenv("DB_USER", "postgres")
+arquitetura\diagnostico_erro.py:13: db_name = os.getenv("DB_NAME", "biblioteca")
+arquitetura\diagnostico_erro.py:15: conn = psycopg2.connect(
+arquitetura\diagnostico_erro.py:16: host=db_host,
+arquitetura\diagnostico_erro.py:17: port=db_port,
+arquitetura\diagnostico_erro.py:18: user=db_user,
+arquitetura\diagnostico_erro.py:20: dbname=db_name,
+arquitetura\main.py:11: db_host = os.getenv("DB_HOST", "localhost")
+arquitetura\main.py:12: db_port = int(os.getenv("DB_PORT", 5432))
+arquitetura\main.py:13: db_user = os.getenv("DB_USER", "postgres")
+arquitetura\main.py:19: db_name = os.getenv("DB_NAME", "biblioteca")
+arquitetura\main.py:21: conexao_pg = psycopg.connect(
+arquitetura\main.py:22: host=db_host,
+arquitetura\main.py:23: port=db_port,
+arquitetura\main.py:24: user=db_user,
+arquitetura\main.py:26: dbname=db_name
+arquitetura\main.py:32: redis_client = redis.Redis(
+arquitetura\testar_cache_fluxo.py:14: db_host = os.getenv("DB_HOST", "localhost")
+arquitetura\testar_cache_fluxo.py:15: db_port = os.getenv("DB_PORT", "5432")
+arquitetura\testar_cache_fluxo.py:16: db_user = os.getenv("DB_USER", "postgres")
+arquitetura\testar_cache_fluxo.py:17: db_name = os.getenv("DB_NAME", "biblioteca")
+arquitetura\testar_cache_fluxo.py:23: conn_string = f"host={db_host} port={db_port} user={db_user} password={db_password} dbname={db_name}"
+arquitetura\testar_cache_fluxo.py:24: conexao_pg = psycopg.connect(conn_string)
+arquitetura\testar_cache_fluxo.py:29: redis_client = redis.Redis(
+docs\diagnostico\cenario-3-script.py:12: if os.getenv("DB_NAME") != "biblioteca_diag":
+docs\diagnostico\cenario-3-script.py:13: sys.exit("ABORTA: DB_NAME diferente de biblioteca_diag")
+docs\diagnostico\cenario-3-script.py:16: return psycopg.connect(
+docs\diagnostico\cenario-3-script.py:17: host=os.getenv("DB_HOST", "localhost"), port=int(os.getenv("DB_PORT", 5432)),
+docs\diagnostico\cenario-3-script.py:18: user=os.getenv("DB_USER", "postgres"),
+docs\diagnostico\cenario-3-script.py:20: dbname=os.getenv("DB_NAME"), **extra)
+docs\diagnostico\cenario-3-script.py:28: r = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"),
+PS C:\Git\emprestimos-biblioteca> # Bloco 3 - Mapa do banco
+PS C:\Git\emprestimos-biblioteca> Set-Location C:\Git\emprestimos-biblioteca
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "\dt"
+              List of tables
+ Esquema |    Nome     |  Tipo  |   Dono   
+---------+-------------+--------+----------
+ public  | autores     | tabela | postgres
+ public  | emprestimos | tabela | postgres
+ public  | exemplares  | tabela | postgres
+ public  | livro_autor | tabela | postgres
+ public  | livros      | tabela | postgres
+ public  | reservas    | tabela | postgres
+ public  | usuarios    | tabela | postgres
+(7 linhas)
+PS C:\Git\emprestimos-biblioteca> foreach ($t in "livros","exemplares","usuarios","reservas","emprestimos") {
+  "===== $t ====="
+  Rodar-Psql "\d $t"
+}
+===== livros =====
+                                            Tabela "public.livros"
+     Coluna     |            Tipo             | OrdenaþÒo | Pode ser nulo |                Padr                
+----------------+-----------------------------+----------+---------------+------------------------------------
+ id             | integer                     |          | not null      | nextval('livros_id_seq'::regclass)
+ titulo         | character varying(200)      |          | not null      | 
+ isbn           | character varying(20)       |          | not null      | 
+ editora        | character varying(120)      |          |               | 
+ ano_publicacao | integer                     |          |               | 
+ criado_em      | timestamp without time zone |          | not null      | now()
+═ndices:
+    "livros_pkey" PRIMARY KEY, btree (id)
+    "livros_isbn_key" UNIQUE CONSTRAINT, btree (isbn)
+Referenciada por:
+    TABLE "exemplares" CONSTRAINT "exemplares_livro_id_fkey" FOREIGN KEY (livro_id) REFERENCES livros(id) ON DELETE RESTRICT
+    TABLE "livro_autor" CONSTRAINT "livro_autor_livro_id_fkey" FOREIGN KEY (livro_id) REFERENCES livros(id) ON DELETE CASCADE
+    TABLE "reservas" CONSTRAINT "reservas_livro_id_fkey" FOREIGN KEY (livro_id) REFERENCES livros(id) ON DELETE RESTRICT
+===== exemplares =====
+                                          Tabela "public.exemplares"
+      Coluna       |         Tipo          | OrdenaþÒo | Pode ser nulo |                  Padr                  
+-------------------+-----------------------+----------+---------------+----------------------------------------
+ id                | integer               |          | not null      | nextval('exemplares_id_seq'::regclass)
+ livro_id          | integer               |          | not null      | 
+ codigo_patrimonio | character varying(30) |          | not null      | 
+ status            | character varying(20) |          | not null      | 'ATIVO'::character varying
+ adquirido_em      | date                  |          | not null      | CURRENT_DATE
+═ndices:
+    "exemplares_pkey" PRIMARY KEY, btree (id)
+    "exemplares_codigo_patrimonio_key" UNIQUE CONSTRAINT, btree (codigo_patrimonio)
+    "idx_exemplares_livro" btree (livro_id)
+Restriþ§es de verificaþÒo:
+    "ck_status_exemplar_valido" CHECK (status::text = ANY (ARRAY['ATIVO'::character varying, 'BAIXADO'::character varying, 'PERDIDO'::character varying]::text[]))
+Restriþ§es de chave estrangeira:
+    "exemplares_livro_id_fkey" FOREIGN KEY (livro_id) REFERENCES livros(id) ON DELETE RESTRICT
+Referenciada por:
+    TABLE "emprestimos" CONSTRAINT "emprestimos_exemplar_id_fkey" FOREIGN KEY (exemplar_id) REFERENCES exemplares(id) ON DELETE RESTRICT
+===== usuarios =====
+                                         Tabela "public.usuarios"
+  Coluna   |            Tipo             | OrdenaþÒo | Pode ser nulo |                 Padr                 
+-----------+-----------------------------+----------+---------------+--------------------------------------
+ id        | integer                     |          | not null      | nextval('usuarios_id_seq'::regclass)
+ nome      | character varying(150)      |          | not null      | 
+ email     | character varying(150)      |          | not null      | 
+ telefone  | character varying(20)       |          |               | 
+ criado_em | timestamp without time zone |          | not null      | now()
+═ndices:
+    "usuarios_pkey" PRIMARY KEY, btree (id)
+    "usuarios_email_key" UNIQUE CONSTRAINT, btree (email)
+Referenciada por:
+    TABLE "emprestimos" CONSTRAINT "emprestimos_usuario_id_fkey" FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE RESTRICT
+    TABLE "reservas" CONSTRAINT "reservas_usuario_id_fkey" FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE RESTRICT
+===== reservas =====
+                                           Tabela "public.reservas"
+    Coluna     |            Tipo             | OrdenaþÒo | Pode ser nulo |                 Padr                 
+---------------+-----------------------------+----------+---------------+--------------------------------------
+ id            | integer                     |          | not null      | nextval('reservas_id_seq'::regclass)
+ livro_id      | integer                     |          | not null      | 
+ usuario_id    | integer                     |          | not null      | 
+ status        | character varying(20)       |          | not null      | 'PENDENTE'::character varying
+ criado_em     | timestamp without time zone |          | not null      | now()
+ notificado_em | timestamp without time zone |          |               | 
+═ndices:
+    "reservas_pkey" PRIMARY KEY, btree (id)
+    "idx_reservas_livro_status" btree (livro_id, status)
+    "uk_reserva_ativa" UNIQUE, btree (usuario_id, livro_id) WHERE status::text = ANY (ARRAY['PENDENTE'::character varying, 'AGUARDANDO_RETIRADA'::character varying]::text[])
+Restriþ§es de verificaþÒo:
+    "ck_status_reserva_valido" CHECK (status::text = ANY (ARRAY['PENDENTE'::character varying, 'AGUARDANDO_RETIRADA'::character varying, 'ATENDIDA'::character varying, 'EXPIRADA'::character varying, 'CANCELADA'::character varying]::text[]))
+Restriþ§es de chave estrangeira:
+    "reservas_livro_id_fkey" FOREIGN KEY (livro_id) REFERENCES livros(id) ON DELETE RESTRICT
+    "reservas_usuario_id_fkey" FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE RESTRICT
+Referenciada por:
+    TABLE "emprestimos" CONSTRAINT "emprestimos_reserva_id_fkey" FOREIGN KEY (reserva_id) REFERENCES reservas(id) ON DELETE RESTRICT
+===== emprestimos =====
+                                               Tabela "public.emprestimos"
+        Coluna         |            Tipo             | OrdenaþÒo | Pode ser nulo |                  Padr                   
+-----------------------+-----------------------------+----------+---------------+-----------------------------------------
+ id                    | integer                     |          | not null      | nextval('emprestimos_id_seq'::regclass)
+ exemplar_id           | integer                     |          | not null      | 
+ usuario_id            | integer                     |          | not null      | 
+ reserva_id            | integer                     |          |               | 
+ emprestado_em         | timestamp without time zone |          | not null      | now()
+ prevista_devolucao_em | date                        |          | not null      | 
+ devolvido_em          | timestamp without time zone |          |               | 
+ criado_em             | timestamp without time zone |          | not null      | now()
+═ndices:
+    "emprestimos_pkey" PRIMARY KEY, btree (id)
+    "emprestimos_reserva_id_key" UNIQUE CONSTRAINT, btree (reserva_id)
+    "idx_emprestimos_usuario" btree (usuario_id)
+    "uk_exemplar_emprestado" UNIQUE, btree (exemplar_id) WHERE devolvido_em IS NULL
+Restriþ§es de verificaþÒo:
+    "ck_devolucao_apos_emprestimo" CHECK (devolvido_em IS NULL OR devolvido_em >= emprestado_em)
+Restriþ§es de chave estrangeira:
+    "emprestimos_exemplar_id_fkey" FOREIGN KEY (exemplar_id) REFERENCES exemplares(id) ON DELETE RESTRICT
+    "emprestimos_reserva_id_fkey" FOREIGN KEY (reserva_id) REFERENCES reservas(id) ON DELETE RESTRICT
+    "emprestimos_usuario_id_fkey" FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE RESTRICT
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "SELECT conrelid::regclass AS tabela, conname, pg_get_constraintdef(oid) AS definicao FROM pg_constraint WHERE conrelid::regclass::text IN ('livros','exemplares','usuarios','reservas','emprestimos') ORDER BY 1,2;"
+   tabela    |                  conname                   |                                                                                                        definicao                                                                                                        
+-------------+--------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ usuarios    | usuarios_criado_em_not_null                | NOT NULL criado_em
+ usuarios    | usuarios_email_key                         | UNIQUE (email)
+ usuarios    | usuarios_email_not_null                    | NOT NULL email
+ usuarios    | usuarios_id_not_null                       | NOT NULL id
+ usuarios    | usuarios_nome_not_null                     | NOT NULL nome
+ usuarios    | usuarios_pkey                              | PRIMARY KEY (id)
+ livros      | livros_criado_em_not_null                  | NOT NULL criado_em
+ livros      | livros_id_not_null                         | NOT NULL id
+ livros      | livros_isbn_key                            | UNIQUE (isbn)
+ livros      | livros_isbn_not_null                       | NOT NULL isbn
+ livros      | livros_pkey                                | PRIMARY KEY (id)
+ livros      | livros_titulo_not_null                     | NOT NULL titulo
+ exemplares  | ck_status_exemplar_valido                  | CHECK (((status)::text = ANY ((ARRAY['ATIVO'::character varying, 'BAIXADO'::character varying, 'PERDIDO'::character varying])::text[])))
+ exemplares  | exemplares_adquirido_em_not_null           | NOT NULL adquirido_em
+ exemplares  | exemplares_codigo_patrimonio_key           | UNIQUE (codigo_patrimonio)
+ exemplares  | exemplares_codigo_patrimonio_not_null      | NOT NULL codigo_patrimonio
+ exemplares  | exemplares_id_not_null                     | NOT NULL id
+ exemplares  | exemplares_livro_id_fkey                   | FOREIGN KEY (livro_id) REFERENCES livros(id) ON DELETE RESTRICT
+ exemplares  | exemplares_livro_id_not_null               | NOT NULL livro_id
+ exemplares  | exemplares_pkey                            | PRIMARY KEY (id)
+ exemplares  | exemplares_status_not_null                 | NOT NULL status
+ reservas    | ck_status_reserva_valido                   | CHECK (((status)::text = ANY ((ARRAY['PENDENTE'::character varying, 'AGUARDANDO_RETIRADA'::character varying, 'ATENDIDA'::character varying, 'EXPIRADA'::character varying, 'CANCELADA'::character varying])::text[])))
+ reservas    | reservas_criado_em_not_null                | NOT NULL criado_em
+ reservas    | reservas_id_not_null                       | NOT NULL id
+ reservas    | reservas_livro_id_fkey                     | FOREIGN KEY (livro_id) REFERENCES livros(id) ON DELETE RESTRICT
+ reservas    | reservas_livro_id_not_null                 | NOT NULL livro_id
+ reservas    | reservas_pkey                              | PRIMARY KEY (id)
+ reservas    | reservas_status_not_null                   | NOT NULL status
+ reservas    | reservas_usuario_id_fkey                   | FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE RESTRICT
+ reservas    | reservas_usuario_id_not_null               | NOT NULL usuario_id
+ emprestimos | ck_devolucao_apos_emprestimo               | CHECK (((devolvido_em IS NULL) OR (devolvido_em >= emprestado_em)))
+ emprestimos | emprestimos_criado_em_not_null             | NOT NULL criado_em
+ emprestimos | emprestimos_emprestado_em_not_null         | NOT NULL emprestado_em
+ emprestimos | emprestimos_exemplar_id_fkey               | FOREIGN KEY (exemplar_id) REFERENCES exemplares(id) ON DELETE RESTRICT
+ emprestimos | emprestimos_exemplar_id_not_null           | NOT NULL exemplar_id
+ emprestimos | emprestimos_id_not_null                    | NOT NULL id
+ emprestimos | emprestimos_pkey                           | PRIMARY KEY (id)
+ emprestimos | emprestimos_prevista_devolucao_em_not_null | NOT NULL prevista_devolucao_em
+ emprestimos | emprestimos_reserva_id_fkey                | FOREIGN KEY (reserva_id) REFERENCES reservas(id) ON DELETE RESTRICT
+ emprestimos | emprestimos_reserva_id_key                 | UNIQUE (reserva_id)
+ emprestimos | emprestimos_usuario_id_fkey                | FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE RESTRICT
+ emprestimos | emprestimos_usuario_id_not_null            | NOT NULL usuario_id
+(42 linhas)
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "SELECT event_object_table, trigger_name FROM information_schema.triggers ORDER BY 1,2;"
+ event_object_table | trigger_name 
+--------------------+--------------
+(0 linha)
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "SELECT table_name, column_name, column_default FROM information_schema.columns WHERE table_schema='public' AND column_name='status' ORDER BY 1;"
+ table_name | column_name |        column_default         
+------------+-------------+-------------------------------
+ exemplares | status      | 'ATIVO'::character varying
+ reservas   | status      | 'PENDENTE'::character varying
+(2 linhas)
+PS C:\Git\emprestimos-biblioteca> # Bloco 4 - Quem escreve o status da reserva
+PS C:\Git\emprestimos-biblioteca> Set-Location C:\Git\emprestimos-biblioteca
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -Include *.py | Where-Object { $_.FullName -notmatch 'venv|node_modules|site-packages' } |
+  Select-String -Pattern "UPDATE reserva|INSERT INTO reserva|SET status|ATENDIDA|def marcar_como_devolvido|def buscar_por_id|DevolverExemplar" |
+  ForEach-Object { "{0}:{1}: {2}" -f $_.Path.Replace("C:\Git\emprestimos-biblioteca\",""), $_.LineNumber, $_.Line.Trim() }
+arquitetura\aplicacao\devolver_exemplar.py:4: class DevolverExemplar:
+arquitetura\dominio\repositorios.py:17: def buscar_por_id(self, usuario_id: int) -> Optional[Usuario]:
+arquitetura\dominio\repositorios.py:23: def buscar_por_id(self, livro_id: int) -> Optional[Livro]:
+arquitetura\dominio\repositorios.py:29: def buscar_por_id(self, exemplar_id: int) -> Optional[Exemplar]:
+arquitetura\dominio\repositorios.py:52: def buscar_por_id(self, reserva_id: int) -> Optional[Reserva]:
+arquitetura\dominio\reserva.py:11: ATENDIDA = "ATENDIDA"
+arquitetura\infraestrutura\repositorios_postgres.py:54: def buscar_por_id(self, exemplar_id: int) -> Optional[Exemplar]:
+arquitetura\infraestrutura\repositorios_postgres.py:93: def buscar_por_id(self, livro_id: int) -> Optional[Livro]:
+arquitetura\infraestrutura\repositorios_postgres.py:109: def buscar_por_id(self, reserva_id: int) -> Optional[Reserva]:
+arquitetura\infraestrutura\repositorios_postgres.py:175: UPDATE reservas
+arquitetura\infraestrutura\repositorios_postgres.py:176: SET status = 'EXPIRADA'
+arquitetura\infraestrutura\repositorio_exemplares_cache.py:43: def buscar_por_id(self, exemplar_id: int) -> Optional[Exemplar]:
+arquitetura\teste\test_criar_emprestimo.py:22: def buscar_por_id(self, exemplar_id):
+arquitetura\teste\test_criar_emprestimo.py:44: def buscar_por_id(self, reserva_id):
+arquitetura\teste\test_criar_emprestimo.py:148: def test_criar_emprestimo_com_reserva_ja_atendida_falha():
+arquitetura\teste\test_criar_emprestimo.py:155: status=StatusReserva.ATENDIDA,
+docs\diagnostico\cenario-3-script.py:4: from aplicacao.devolver_exemplar import DevolverExemplar
+docs\diagnostico\cenario-3-script.py:36: devolver = DevolverExemplar(repo_emp, repo_ex)
+docs\diagnostico\cenario-3-script.py:77: rid = obs.execute("INSERT INTO reservas (livro_id, usuario_id) VALUES (1, 3) RETURNING id").fetchone()[0]
+docs\diagnostico\cenario-3-script.py:91: obs.execute("UPDATE reservas SET status = 'PENDENTE' WHERE id = %s", (rid,))
+docs\diagnostico\cenario-3-script.py:96: tentar(f"d) DevolverExemplar.executar({emp_ana.id})", lambda: devolver.executar(emp_ana.id))
+PS C:\Git\emprestimos-biblioteca> "===== 4b ====="
+===== 4b =====
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -Include *.py | Where-Object { $_.FullName -notmatch 'venv|node_modules|site-packages' } |
+  Select-String -Pattern "AGUARDANDO_RETIRADA|marcar_como_expirada|buscar_aguardando_retirada|StatusReserva\.|notificado_em" |
+  ForEach-Object { "{0}:{1}: {2}" -f $_.Path.Replace("C:\Git\emprestimos-biblioteca\",""), $_.LineNumber, $_.Line.Trim() }
+arquitetura\aplicacao\expirar_reservas_pendentes.py:10: def buscar_aguardando_retirada(self) -> list[Reserva]:
+arquitetura\aplicacao\expirar_reservas_pendentes.py:13: def marcar_como_expirada(self, reserva_id: int) -> None:
+arquitetura\aplicacao\expirar_reservas_pendentes.py:25: for reserva in repositorio.buscar_aguardando_retirada():
+arquitetura\aplicacao\expirar_reservas_pendentes.py:27: repositorio.marcar_como_expirada(reserva.id)
+arquitetura\dominio\emprestimo.py:52: "AGUARDANDO_RETIRADA podem)."
+arquitetura\dominio\repositorios.py:62: def buscar_aguardando_retirada(self) -> list[Reserva]:
+arquitetura\dominio\repositorios.py:66: def marcar_como_expirada(self, reserva_id: int) -> None:
+arquitetura\dominio\reserva.py:2: # PENDENTE, AGUARDANDO_RETIRADA etc.
+arquitetura\dominio\reserva.py:10: AGUARDANDO_RETIRADA = "AGUARDANDO_RETIRADA"
+arquitetura\dominio\reserva.py:15: _STATUS_ATIVOS = {StatusReserva.PENDENTE, StatusReserva.AGUARDANDO_RETIRADA}
+arquitetura\dominio\reserva.py:24: status: StatusReserva = StatusReserva.PENDENTE,
+arquitetura\dominio\reserva.py:25: notificado_em: datetime | None = None,
+arquitetura\dominio\reserva.py:35: self.notificado_em = notificado_em
+arquitetura\dominio\reserva.py:47: if self.status != StatusReserva.AGUARDANDO_RETIRADA:
+arquitetura\dominio\reserva.py:49: if self.notificado_em is None:
+arquitetura\dominio\reserva.py:51: return agora >= self.notificado_em + janela
+arquitetura\infraestrutura\repositorios_postgres.py:114: status, notificado_em
+arquitetura\infraestrutura\repositorios_postgres.py:128: notificado_em=linha[5],
+arquitetura\infraestrutura\repositorios_postgres.py:141: AND status IN ('PENDENTE', 'AGUARDANDO_RETIRADA')
+arquitetura\infraestrutura\repositorios_postgres.py:149: def buscar_aguardando_retirada(self) -> list[Reserva]:
+arquitetura\infraestrutura\repositorios_postgres.py:154: status, notificado_em
+arquitetura\infraestrutura\repositorios_postgres.py:155: FROM reservas WHERE status = 'AGUARDANDO_RETIRADA'
+arquitetura\infraestrutura\repositorios_postgres.py:166: notificado_em=linha[5],
+arquitetura\infraestrutura\repositorios_postgres.py:171: def marcar_como_expirada(self, reserva_id: int) -> None:
+arquitetura\teste\testar_expiracao_manual.py:24: aguardando = repositorio.buscar_aguardando_retirada()
+arquitetura\teste\testar_expiracao_manual.py:25: print(f"📦 Reservas atualmente 'AGUARDANDO_RETIRADA': {len(aguardando)}")
+arquitetura\teste\testar_expiracao_manual.py:28: print(f"   - Reserva ID: {r.id} | Notificado em: {r.notificado_em}")
+arquitetura\teste\test_criar_emprestimo.py:34: def buscar_aguardando_retirada(self, livro_id: int):
+arquitetura\teste\test_criar_emprestimo.py:37: def marcar_como_expirada(self, reserva_id: int):
+arquitetura\teste\test_criar_emprestimo.py:55: def buscar_aguardando_retirada(self, livro_id: int):
+arquitetura\teste\test_criar_emprestimo.py:58: def marcar_como_expirada(self, reserva_id: int):
+arquitetura\teste\test_criar_emprestimo.py:140: status=StatusReserva.CANCELADA,
+arquitetura\teste\test_criar_emprestimo.py:155: status=StatusReserva.ATENDIDA,
+PS C:\Git\emprestimos-biblioteca> # Bloco 5 - Seed
+PS C:\Git\emprestimos-biblioteca> Set-Location C:\Git\emprestimos-biblioteca
+PS C:\Git\emprestimos-biblioteca> & $psql -U postgres -d $env:DB_NAME -v ON_ERROR_STOP=1 -f docs\diagnostico\seed-cenario-3.sql 2>&1 | Out-String | Write-Host
+DO
+TRUNCATE TABLE
+INSERT 0 2
+INSERT 0 3
+INSERT 0 3
+INSERT 0 1
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "SELECT id, livro_id, usuario_id, status FROM reservas ORDER BY id;"
+ id | livro_id | usuario_id |  status  
+----+----------+------------+----------
+  1 |        1 |          1 | PENDENTE
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "SELECT id, livro_id, codigo_patrimonio, status FROM exemplares ORDER BY id;"
+ id | livro_id | codigo_patrimonio | status 
+----+----------+-------------------+--------
+  1 |        1 | PAT-001           | ATIVO
+  2 |        1 | PAT-002           | ATIVO
+  3 |        2 | PAT-003           | ATIVO
+(3 linhas)
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "SELECT id, nome FROM usuarios ORDER BY id;"
+ id | nome  
+----+-------
+  1 | Ana
+  2 | Bruno
+  3 | Carla
+(3 linhas)
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "SELECT COUNT(*) AS emprestimos FROM emprestimos;"
+ emprestimos 
+-------------
+           0
+(1 linha)
+PS C:\Git\emprestimos-biblioteca> "===== Redis ANTES ====="
+===== Redis ANTES =====
+PS C:\Git\emprestimos-biblioteca> Rodar-Redis
+PING: True
+chaves: []
+TTL livro 1: -2
+valor livro 1: None
+PS C:\Git\emprestimos-biblioteca> # Bloco 6 - Execução do script
+PS C:\Git\emprestimos-biblioteca> Set-Location C:\Git\emprestimos-biblioteca
+PS C:\Git\emprestimos-biblioteca> "DB_NAME = $env:DB_NAME  PYTHONPATH = $env:PYTHONPATH"
+DB_NAME = biblioteca_diag  PYTHONPATH = C:\Git\emprestimos-biblioteca\arquitetura
+PS C:\Git\emprestimos-biblioteca> python docs\diagnostico\cenario-3-script.py 2>&1 | Out-String | Write-Host
+BANCO: biblioteca_diag
+
+--- ESTADO: INICIAL
+emprestimos:
+reservas:
+   (1, 1, 1, 'PENDENTE')
+redis disponibilidade:livro:1 = None | ttl = -2
+
+Cache aquecido (como a API faria): {'livro_id': 1, 'total': 2, 'disponiveis': 0, 'em_estoque': False}
+
+--- ESTADO: apos aquecer o cache
+emprestimos:
+reservas:
+   (1, 1, 1, 'PENDENTE')
+redis disponibilidade:livro:1 = {"livro_id": 1, "total": 2, "disponiveis": 0, "em_estoque": false} | ttl = 60
+
+===  a) Ana (usuario 1) pega exemplar 1, livro 1, reserva_id=1
+ACEITO: Emprestimo(id=1, usuario_id=1, exemplar_id=1, reserva_id=1)
+DIAS DE PRAZO: 14
+
+--- ESTADO: apos (a)
+emprestimos:
+   (1, 1, 1, 1, datetime.date(2026, 10, 30), datetime.date(2026, 11, 13), None)
+reservas:
+   (1, 1, 1, 'PENDENTE')
+redis disponibilidade:livro:1 = None | ttl = -2
+
+===  b) Bruno (usuario 2) pega exemplar 2, livro 1, sem reserva
+ACEITO: Emprestimo(id=2, usuario_id=2, exemplar_id=2, reserva_id=None)
+DIAS DE PRAZO: 7
+
+--- ESTADO: apos (b)
+emprestimos:
+   (1, 1, 1, 1, datetime.date(2026, 10, 30), datetime.date(2026, 11, 13), None)
+   (2, 2, 2, None, datetime.date(2026, 10, 30), datetime.date(2026, 11, 6), None)
+reservas:
+   (1, 1, 1, 'PENDENTE')
+redis disponibilidade:livro:1 = None | ttl = -2
+
+Reserva da Carla criada, id = 2
+
+--- ESTADO: antes de (c)
+emprestimos:
+   (1, 1, 1, 1, datetime.date(2026, 10, 30), datetime.date(2026, 11, 13), None)
+   (2, 2, 2, None, datetime.date(2026, 10, 30), datetime.date(2026, 11, 6), None)
+reservas:
+   (1, 1, 1, 'PENDENTE')
+   (2, 3, 1, 'PENDENTE')
+redis disponibilidade:livro:1 = None | ttl = -2
+
+===  c1) executar({'usuario_id': 3, 'exemplar_id': 3, 'livro_id': 1, 'reserva_id': 2})
+ACEITO: Emprestimo(id=3, usuario_id=3, exemplar_id=3, reserva_id=2)
+DIAS DE PRAZO: 7
+
+--- ESTADO: apos c1
+emprestimos:
+   (1, 1, 1, 1, datetime.date(2026, 10, 30), datetime.date(2026, 11, 13), None)
+   (2, 2, 2, None, datetime.date(2026, 10, 30), datetime.date(2026, 11, 6), None)
+   (3, 3, 3, 2, datetime.date(2026, 10, 30), datetime.date(2026, 11, 6), None)
+reservas:
+   (1, 1, 1, 'PENDENTE')
+   (2, 3, 1, 'PENDENTE')
+redis disponibilidade:livro:1 = None | ttl = -2
+LIMPEZA apos c1: emprestimos do exemplar 3 apagados; reserva 2 voltou a PENDENTE
+
+===  c2) executar({'usuario_id': 3, 'exemplar_id': 3, 'livro_id': 2, 'reserva_id': 2})
+EXCECAO: ValueError - Reserva 2 ├® do livro 1, n├úo do livro 2 deste empr├®stimo.
+Traceback (most recent call last):
+  File "C:\Git\emprestimos-biblioteca\docs\diagnostico\cenario-3-script.py", line 51, in tentar
+    res = fn()
+  File "C:\Git\emprestimos-biblioteca\docs\diagnostico\cenario-3-script.py", line 87, in <lambda>
+    tentar(f"{nome}) executar({kw})", lambda kw=kw: criar.executar(**kw))
+                                                    ~~~~~~~~~~~~~~^^^^^^
+  File "C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\criar_emprestimo.py", line 60, in executar
+    emprestimo = Emprestimo(
+        id=None,
+    ...<5 lines>...
+        reserva=reserva,
+    )
+  File "C:\Git\emprestimos-biblioteca\arquitetura\dominio\emprestimo.py", line 33, in __init__
+    self._validar_coerencia_com_reserva(reserva, usuario_id, livro_id)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Git\emprestimos-biblioteca\arquitetura\dominio\emprestimo.py", line 60, in _validar_coerencia_com_reserva
+    raise ValueError(
+    ...<2 lines>...
+    )
+ValueError: Reserva 2 ├® do livro 1, n├úo do livro 2 deste empr├®stimo.
+
+--- ESTADO: apos c2
+emprestimos:
+   (1, 1, 1, 1, datetime.date(2026, 10, 30), datetime.date(2026, 11, 13), None)
+   (2, 2, 2, None, datetime.date(2026, 10, 30), datetime.date(2026, 11, 6), None)
+reservas:
+   (1, 1, 1, 'PENDENTE')
+   (2, 3, 1, 'PENDENTE')
+redis disponibilidade:livro:1 = None | ttl = -2
+LIMPEZA apos c2: emprestimos do exemplar 3 apagados; reserva 2 voltou a PENDENTE
+
+===  c3) executar({'usuario_id': 3, 'exemplar_id': 3, 'livro_id': 1})
+ACEITO: Emprestimo(id=4, usuario_id=3, exemplar_id=3, reserva_id=None)
+DIAS DE PRAZO: 7
+
+--- ESTADO: apos c3
+emprestimos:
+   (1, 1, 1, 1, datetime.date(2026, 10, 30), datetime.date(2026, 11, 13), None)
+   (2, 2, 2, None, datetime.date(2026, 10, 30), datetime.date(2026, 11, 6), None)
+   (4, 3, 3, None, datetime.date(2026, 10, 30), datetime.date(2026, 11, 6), None)
+reservas:
+   (1, 1, 1, 'PENDENTE')
+   (2, 3, 1, 'PENDENTE')
+redis disponibilidade:livro:1 = None | ttl = -2
+LIMPEZA apos c3: emprestimos do exemplar 3 apagados; reserva 2 voltou a PENDENTE
+
+===  c4) executar({'usuario_id': 3, 'exemplar_id': 3, 'livro_id': 2})
+ACEITO: Emprestimo(id=5, usuario_id=3, exemplar_id=3, reserva_id=None)
+DIAS DE PRAZO: 14
+
+--- ESTADO: apos c4
+emprestimos:
+   (1, 1, 1, 1, datetime.date(2026, 10, 30), datetime.date(2026, 11, 13), None)
+   (2, 2, 2, None, datetime.date(2026, 10, 30), datetime.date(2026, 11, 6), None)
+   (5, 3, 3, None, datetime.date(2026, 10, 30), datetime.date(2026, 11, 13), None)
+reservas:
+   (1, 1, 1, 'PENDENTE')
+   (2, 3, 1, 'PENDENTE')
+redis disponibilidade:livro:1 = None | ttl = -2
+LIMPEZA apos c4: emprestimos do exemplar 3 apagados; reserva 2 voltou a PENDENTE
+
+===  d) DevolverExemplar.executar(1)
+EXCECAO: AttributeError - 'RepositorioEmprestimoPostgres' object has no attribute 'buscar_por_id'
+Traceback (most recent call last):
+  File "C:\Git\emprestimos-biblioteca\docs\diagnostico\cenario-3-script.py", line 51, in tentar
+    res = fn()
+  File "C:\Git\emprestimos-biblioteca\docs\diagnostico\cenario-3-script.py", line 96, in <lambda>
+    tentar(f"d) DevolverExemplar.executar({emp_ana.id})", lambda: devolver.executar(emp_ana.id))
+                                                                  ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Git\emprestimos-biblioteca\arquitetura\aplicacao\devolver_exemplar.py", line 17, in executar
+    emprestimo = self._repo_emprestimo.buscar_por_id(emprestimo_id)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'RepositorioEmprestimoPostgres' object has no attribute 'buscar_por_id'
+
+--- ESTADO: apos (d)
+emprestimos:
+   (1, 1, 1, 1, datetime.date(2026, 10, 30), datetime.date(2026, 11, 13), None)
+   (2, 2, 2, None, datetime.date(2026, 10, 30), datetime.date(2026, 11, 6), None)
+reservas:
+   (1, 1, 1, 'PENDENTE')
+   (2, 3, 1, 'PENDENTE')
+redis disponibilidade:livro:1 = None | ttl = -2
+PS C:\Git\emprestimos-biblioteca> # Bloco 7 - Estado final
+PS C:\Git\emprestimos-biblioteca> Set-Location C:\Git\emprestimos-biblioteca
+PS C:\Git\emprestimos-biblioteca> "===== Redis DEPOIS ====="
+===== Redis DEPOIS =====
+PS C:\Git\emprestimos-biblioteca> Rodar-Redis
+PING: True
+chaves: []
+TTL livro 1: -2
+valor livro 1: None
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "SELECT id, usuario_id, exemplar_id, reserva_id, prevista_devolucao_em, devolvido_em FROM emprestimos ORDER BY id;"
+ id | usuario_id | exemplar_id | reserva_id | prevista_devolucao_em | devolvido_em 
+----+------------+-------------+------------+-----------------------+--------------
+  1 |          1 |           1 |          1 | 2026-11-13            | 
+  2 |          2 |           2 |            | 2026-11-06            | 
+(2 linhas)
+PS C:\Git\emprestimos-biblioteca> Rodar-Psql "SELECT id, usuario_id, livro_id, status FROM reservas ORDER BY id;"
+ id | usuario_id | livro_id |  status  
+----+------------+----------+----------
+  1 |          1 |        1 | PENDENTE
+  2 |          3 |        1 | PENDENTE
+(2 linhas)
