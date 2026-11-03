@@ -1,0 +1,507 @@
+﻿**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20261103105450
+Nome de Usuário: DESKTOP-G6SH7L9\julia
+Executar como Usuário: DESKTOP-G6SH7L9\julia
+Nome da Configuração: 
+Computador: DESKTOP-G6SH7L9 (Microsoft Windows NT 10.0.26300.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID do Processo: 10176
+PSVersion: 5.1.26100.9818
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9818
+BuildVersion: 10.0.26100.9818
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é docs\diagnostico\evidencias\cenario-3\cenario-3-parte-2.txt
+PS C:\Git\emprestimos-biblioteca> # Bloco 1 - Evidência complementar, só leitura
+PS C:\Git\emprestimos-biblioteca> git branch --show-current
+docs/diagnostico
+PS C:\Git\emprestimos-biblioteca> # quem chama o quê na expiração de reservas
+PS C:\Git\emprestimos-biblioteca> foreach ($f in "arquitetura\aplicacao\expirar_reservas_pendentes.py","arquitetura\infraestrutura\tasks.py") {
+  "===== $f ====="
+  $i = 0; Get-Content $f -Encoding UTF8 | ForEach-Object { $i++; "{0,4}: {1}" -f $i, $_ }
+}
+===== arquitetura\aplicacao\expirar_reservas_pendentes.py =====
+   1: # aplicacao/expirar_reservas_pendentes.py
+   2:
+   3: from datetime import datetime, timedelta
+   4: from typing import Protocol
+   5:
+   6: from dominio.reserva import Reserva
+   7:
+   8:
+   9: class RepositorioReservas(Protocol):
+  10:     def buscar_aguardando_retirada(self) -> list[Reserva]:
+  11:         ...
+  12:
+  13:     def marcar_como_expirada(self, reserva_id: int) -> None:
+  14:         ...
+  15:
+  16:
+  17: def expirar_reservas_pendentes(
+  18:     repositorio: RepositorioReservas,
+  19:     janela: timedelta = timedelta(hours=48),
+  20:     agora: datetime | None = None,
+  21: ) -> list[int]:
+  22:     agora = agora or datetime.now()
+  23:     reservas_ids_expiradas: list[int] = []
+  24:
+  25:     for reserva in repositorio.buscar_aguardando_retirada():
+  26:         if reserva.esta_expirada(janela, agora):
+  27:             repositorio.marcar_como_expirada(reserva.id)
+  28:             reservas_ids_expiradas.append(reserva.id)
+  29:
+  30:     return reservas_ids_expiradas
+===== arquitetura\infraestrutura\tasks.py =====
+   1: import os
+   2: import psycopg2
+   3: from datetime import timedelta
+   4:
+   5: from celery_app import app
+   6: from aplicacao.expirar_reservas_pendentes import expirar_reservas_pendentes
+   7: from infraestrutura.repositorios_postgres import RepositorioReservaPostgres
+   8:
+   9:
+  10: @app.task(name="tarefas.expirar_reservas")
+  11: def task_expirar_reservas():
+  12:     print("Iniciando varredura de reservas pendentes expiradas...")
+  13:
+  14:     # Exige obrigatoriamente a senha pelas variáveis de ambiente (sem fallback inseguro)
+  15:     senha = os.getenv("DB_PASSWORD") or os.getenv("DB_PASS") or os.getenv("POSTGRES_PASSWORD")
+  16:     if not senha:
+  17:         raise ValueError("Erro de Configuração: A variável de ambiente DB_PASSWORD (ou equivalente) é obrigatória.")
+  18:
+  19:     # Corrige eventuais caracteres desalinhados trazidos pelo terminal do Windows
+  20:     if isinstance(senha, str):
+  21:         try:
+  22:             senha = senha.encode('latin1').decode('utf-8')
+  23:         except (UnicodeEncodeError, UnicodeDecodeError):
+  24:             pass
+  25:
+  26:     # Captura os parâmetros de conexão via variáveis de ambiente com fallbacks locais
+  27:     db_host = os.getenv("DB_HOST", "localhost")
+  28:     db_name = os.getenv("DB_NAME", "emprestimo")
+  29:     db_user = os.getenv("DB_USER", "postgres")
+  30:     db_port = os.getenv("DB_PORT", "5432")
+  31:
+  32:     conexao = psycopg2.connect(
+  33:         dbname=db_name,
+  34:         user=db_user,
+  35:         password=senha,
+  36:         host=db_host,
+  37:         port=db_port
+  38:     )
+  39:     try:
+  40:         repositorio = RepositorioReservaPostgres(conexao)
+  41:         ids_expirados = expirar_reservas_pendentes(repositorio, janela=timedelta(hours=48))
+  42:         print(f"Varredura concluída. Reservas expiradas: {ids_expirados}")
+  43:         return ids_expirados
+  44:     finally:
+  45:         conexao.close()
+PS C:\Git\emprestimos-biblioteca> # outros escritores de status fora dos .py
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem -Recurse -File -Include *.sql,*.js,*.jsx,*.ts,*.tsx,*.yml,*.yaml,*.sh,*.ps1,*.cfg,*.ini,*.toml |
+  Where-Object { $_.FullName -notmatch 'node_modules|venv|site-packages|\\\.git\\|evidencias' } |
+  Select-String -Pattern "UPDATE\s+reservas|INSERT INTO reservas|ATENDIDA|AGUARDANDO_RETIRADA|SET status" |
+  ForEach-Object { "{0}:{1}: {2}" -f $_.Path.Replace("C:\Git\emprestimos-biblioteca\",""), $_.LineNumber, $_.Line.Trim() }
+docs\diagnostico\seed-cenario-3.sql:26: INSERT INTO reservas (livro_id, usuario_id) VALUES
+biblioteca_schema.sql:61: status IN ('PENDENTE', 'AGUARDANDO_RETIRADA', 'ATENDIDA', 'EXPIRADA', 'CANCELADA')
+biblioteca_schema.sql:68: WHERE status IN ('PENDENTE', 'AGUARDANDO_RETIRADA');
+PS C:\Git\emprestimos-biblioteca> # testes: arquivos da pasta, leitura completa do test_criar_emprestimo.py e busca por testes de devolução
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem arquitetura\teste -File | Select-Object Name
+
+Name
+----
+testar_expiracao_manual.py
+teste_integracao_prazo_remoto.py
+test_criar_emprestimo.py
+__init__.py
+
+
+PS C:\Git\emprestimos-biblioteca> $i = 0; Get-Content arquitetura\teste\test_criar_emprestimo.py -Encoding UTF8 | ForEach-Object { $i++; "{0,4}: {1}" -f $i, $_ }
+   1: # prova automatizada (com repositórios falsos)
+   2: # de que a invariante da reserva é respeitada.
+   3: from datetime import datetime
+   4:
+   5: import pytest
+   6:
+   7: from dominio.exemplar import Exemplar, StatusExemplar
+   8: from dominio.reserva import Reserva, StatusReserva
+   9: from dominio.repositorios import (
+  10:     RepositorioExemplar,
+  11:     RepositorioReserva,
+  12:     RepositorioEmprestimo,
+  13: )
+  14: from aplicacao.criar_emprestimo import CriarEmprestimo, ExemplarIndisponivelError
+  15: from dominio.politica_prazo import PrazoPadrao
+  16:
+  17:
+  18: class RepositorioExemplarFake(RepositorioExemplar):
+  19:     def __init__(self, exemplares):
+  20:         self._exemplares = {e.id: e for e in exemplares}
+  21:
+  22:     def buscar_por_id(self, exemplar_id):
+  23:         return self._exemplares.get(exemplar_id)
+  24:
+  25:     def esta_disponivel(self, exemplar_id):
+  26:         return True
+  27:
+  28:     def buscar_disponibilidade(self, livro_id):
+  29:         return None
+  30:
+  31:     def invalidar_disponibilidade(self, livro_id):
+  32:         pass
+  33:
+  34:     def buscar_aguardando_retirada(self, livro_id: int):
+  35:         return []
+  36:
+  37:     def marcar_como_expirada(self, reserva_id: int):
+  38:         pass
+  39:
+  40: class RepositorioReservaFake(RepositorioReserva):
+  41:     def __init__(self, reservas):
+  42:         self._reservas = {r.id: r for r in reservas}
+  43:
+  44:     def buscar_por_id(self, reserva_id):
+  45:         return self._reservas.get(reserva_id)
+  46:
+  47:     def existe_reserva_pendente_para_livro(self, livro_id, excluir_usuario_id):
+  48:         return any(
+  49:             r.livro_id == livro_id
+  50:             and r.usuario_id != excluir_usuario_id
+  51:             and r.esta_ativa()
+  52:             for r in self._reservas.values()
+  53:         )
+  54:
+  55:     def buscar_aguardando_retirada(self, livro_id: int):
+  56:         return []
+  57:
+  58:     def marcar_como_expirada(self, reserva_id: int):
+  59:         if reserva_id in self._reservas:
+  60:             # simula a alteração de status se necessário
+  61:             pass
+  62:
+  63:
+  64: class RepositorioEmprestimoFake(RepositorioEmprestimo):
+  65:     def __init__(self):
+  66:         self._salvos = []
+  67:         self._proximo_id = 1
+  68:
+  69:     def existe_emprestimo_ativo_para_exemplar(self, exemplar_id):
+  70:         return any(
+  71:             e.exemplar_id == exemplar_id and e.esta_ativo() for e in self._salvos
+  72:         )
+  73:
+  74:     def salvar(self, emprestimo):
+  75:         emprestimo.id = self._proximo_id
+  76:         self._proximo_id += 1
+  77:         self._salvos.append(emprestimo)
+  78:         return emprestimo
+  79:
+  80:
+  81: def _montar_caso_de_uso(exemplares, reservas):
+  82:     return CriarEmprestimo(
+  83:         repo_exemplar=RepositorioExemplarFake(exemplares),
+  84:         repo_reserva=RepositorioReservaFake(reservas),
+  85:         repo_emprestimo=RepositorioEmprestimoFake(),
+  86:         politica_prazo=PrazoPadrao(),
+  87:     )
+  88:
+  89:
+  90: # --- Testes ---
+  91:
+  92: @pytest.mark.unitario
+  93: def test_criar_emprestimo_sem_reserva_funciona():
+  94:     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+  95:     caso_de_uso = _montar_caso_de_uso(exemplares=[exemplar], reservas=[])
+  96:
+  97:     emprestimo = caso_de_uso.executar(usuario_id=100, exemplar_id=1, livro_id=10)
+  98:
+  99:     assert emprestimo.id is not None
+ 100:     assert emprestimo.reserva_id is None
+ 101:
+ 102: @pytest.mark.unitario
+ 103: def test_criar_emprestimo_com_reserva_coerente_funciona():
+ 104:     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+ 105:     reserva = Reserva(id=5, usuario_id=100, livro_id=10, criado_em=datetime(2026, 1, 1))
+ 106:     caso_de_uso = _montar_caso_de_uso(exemplares=[exemplar], reservas=[reserva])
+ 107:
+ 108:     emprestimo = caso_de_uso.executar(
+ 109:         usuario_id=100, exemplar_id=1, livro_id=10, reserva_id=5
+ 110:     )
+ 111:
+ 112:     assert emprestimo.reserva_id == 5
+ 113:
+ 114: @pytest.mark.unitario
+ 115: def test_criar_emprestimo_com_reserva_de_outro_usuario_falha():
+ 116:     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+ 117:     reserva = Reserva(id=5, usuario_id=999, livro_id=10, criado_em=datetime(2026, 1, 1))
+ 118:     caso_de_uso = _montar_caso_de_uso(exemplares=[exemplar], reservas=[reserva])
+ 119:
+ 120:     with pytest.raises(ValueError, match="pertence ao usuario"):
+ 121:         caso_de_uso.executar(usuario_id=100, exemplar_id=1, livro_id=10, reserva_id=5)
+ 122:
+ 123: @pytest.mark.unitario
+ 124: def test_criar_emprestimo_com_reserva_de_outro_livro_falha():
+ 125:     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+ 126:     reserva = Reserva(id=5, usuario_id=100, livro_id=999, criado_em=datetime(2026, 1, 1))
+ 127:     caso_de_uso = _montar_caso_de_uso(exemplares=[exemplar], reservas=[reserva])
+ 128:
+ 129:     with pytest.raises(ValueError, match="é do livro"):
+ 130:         caso_de_uso.executar(usuario_id=100, exemplar_id=1, livro_id=10, reserva_id=5)
+ 131:
+ 132: @pytest.mark.unitario
+ 133: def test_criar_emprestimo_com_reserva_cancelada_falha():
+ 134:     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+ 135:     reserva = Reserva(
+ 136:         id=5,
+ 137:         usuario_id=100,
+ 138:         livro_id=10,
+ 139:         criado_em=datetime(2026, 1, 1),
+ 140:         status=StatusReserva.CANCELADA,
+ 141:     )
+ 142:     caso_de_uso = _montar_caso_de_uso(exemplares=[exemplar], reservas=[reserva])
+ 143:
+ 144:     with pytest.raises(ValueError, match="está com status"):
+ 145:         caso_de_uso.executar(usuario_id=100, exemplar_id=1, livro_id=10, reserva_id=5)
+ 146:
+ 147: @pytest.mark.unitario
+ 148: def test_criar_emprestimo_com_reserva_ja_atendida_falha():
+ 149:     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+ 150:     reserva = Reserva(
+ 151:         id=5,
+ 152:         usuario_id=100,
+ 153:         livro_id=10,
+ 154:         criado_em=datetime(2026, 1, 1),
+ 155:         status=StatusReserva.ATENDIDA,
+ 156:     )
+ 157:     caso_de_uso = _montar_caso_de_uso(exemplares=[exemplar], reservas=[reserva])
+ 158:
+ 159:     with pytest.raises(ValueError, match="está com status"):
+ 160:         caso_de_uso.executar(usuario_id=100, exemplar_id=1, livro_id=10, reserva_id=5)
+ 161:
+ 162: @pytest.mark.unitario
+ 163: def test_criar_emprestimo_exemplar_ja_emprestado_falha():
+ 164:     exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+ 165:     caso_de_uso = _montar_caso_de_uso(exemplares=[exemplar], reservas=[])
+ 166:
+ 167:     caso_de_uso.executar(usuario_id=100, exemplar_id=1, livro_id=10)
+ 168:
+ 169:     with pytest.raises(ExemplarIndisponivelError):
+ 170:         caso_de_uso.executar(usuario_id=200, exemplar_id=1, livro_id=10)
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem arquitetura\teste -Recurse -File -Include *.py |
+  Select-String -Pattern "Devolver|devolver|marcar_como_devolvido" |
+  ForEach-Object { "{0}:{1}: {2}" -f $_.Path.Replace("C:\Git\emprestimos-biblioteca\",""), $_.LineNumber, $_.Line.Trim() }
+PS C:\Git\emprestimos-biblioteca> git status --short
+
+PS C:\Git\emprestimos-biblioteca> Stop-Transcript
+**********************
+Fim da transcrição do Windows PowerShell
+Hora de término: 20261103110416
+**********************
+**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20261103182017
+Nome de Usuário: DESKTOP-G6SH7L9\julia
+Executar como Usuário: DESKTOP-G6SH7L9\julia
+Nome da Configuração: 
+Computador: DESKTOP-G6SH7L9 (Microsoft Windows NT 10.0.26300.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID do Processo: 14428
+PSVersion: 5.1.26100.9818
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9818
+BuildVersion: 10.0.26100.9818
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é docs\diagnostico\evidencias\cenario-3\cenario-3-parte-2.txt
+PS C:\Git\emprestimos-biblioteca> # Bloco 2 (Parte 2) - ler teste_integracao_prazo_remoto.py
+PS C:\Git\emprestimos-biblioteca> $i = 0; Get-Content arquitetura\teste\teste_integracao_prazo_remoto.py -Encoding UTF8 | ForEach-Object { $i++; "{0,4}: {1}" -f $i, $_ }
+   1: # teste_integracao_prazo_remoto.py
+   2: import sys
+   3: import os
+   4: import pytest
+   5: from unittest.mock import patch
+   6:
+   7: sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+   8:
+   9: import requests
+  10: from infraestrutura.politica_prazo_remota import PrazoComFilaDeReservaRemota
+  11: from dominio.politica_prazo import PrazoComFilaDeReserva
+  12:
+  13:
+  14: # Mock / Dublê do repositório de reserva para execução dos testes
+  15: class RepositorioReservaFakeParaTeste:
+  16:     def __init__(self, tem_reserva: bool):
+  17:         self._tem_reserva = tem_reserva
+  18:
+  19:     def existe_reserva_pendente_para_livro(self, livro_id: int, excluir_usuario_id: int) -> bool:
+  20:         return self._tem_reserva
+  21:
+  22: @pytest.mark.integracao
+  23: def testar_integracao_caminho_feliz():
+  24:     print("\n--- Teste 1: Caminho Feliz (Microsserviço Online) ---")
+  25:
+  26:     # Cenário 1: Com reserva pendente (deve retornar 7 via microsserviço)
+  27:     repo_com_reserva = RepositorioReservaFakeParaTeste(tem_reserva=True)
+  28:     fallback = PrazoComFilaDeReserva(repo_reserva=repo_com_reserva)
+  29:
+  30:     politica_remota = PrazoComFilaDeReservaRemota(
+  31:         repo_reserva=repo_com_reserva,
+  32:         cliente_http=requests,
+  33:         fallback=fallback
+  34:     )
+  35:
+  36:     dias = politica_remota.calcular_dias(usuario_id=1, livro_id=10)
+  37:     print(f"Resultado com reserva (esperado 7): {dias}")
+  38:     assert dias == 7, f"Esperado 7, mas veio {dias}"
+  39:
+  40:     # Cenário 2: Sem reserva pendente (deve retornar 14 via microsserviço)
+  41:     repo_sem_reserva = RepositorioReservaFakeParaTeste(tem_reserva=False)
+  42:     fallback_sem = PrazoComFilaDeReserva(repo_reserva=repo_sem_reserva)
+  43:
+  44:     politica_remota_sem = PrazoComFilaDeReservaRemota(
+  45:         repo_reserva=repo_sem_reserva,
+  46:         cliente_http=requests,
+  47:         fallback=fallback_sem
+  48:     )
+  49:
+  50:     dias_sem = politica_remota_sem.calcular_dias(usuario_id=1, livro_id=10)
+  51:     print(f"Resultado sem reserva (esperado 14): {dias_sem}")
+  52:     assert dias_sem == 14, f"Esperado 14, mas veio {dias_sem}"
+  53:
+  54:     print("Sucesso! O sistema principal conversou com o microsserviço corretamente.")
+  55:
+  56: @pytest.mark.integracao
+  57: def testar_integracao_fallback_indisponivel():
+  58:     print("\n--- Teste 2: Fallback (Microsserviço Indisponível) ---")
+  59:
+  60:     # Instancia o repositório e o fallback local
+  61:     repo_com_reserva = RepositorioReservaFakeParaTeste(tem_reserva=True)
+  62:     fallback = PrazoComFilaDeReserva(repo_reserva=repo_com_reserva)
+  63:
+  64:     # 1. Calculamos o valor que o fallback local retornaria diretamente
+  65:     resultado_esperado_local = fallback.calcular_dias(usuario_id=1, livro_id=10)
+  66:
+  67:     # Instancia a política remota
+  68:     politica_remota = PrazoComFilaDeReservaRemota(
+  69:         repo_reserva=repo_com_reserva,
+  70:         cliente_http=requests,
+  71:         fallback=fallback
+  72:     )
+  73:
+  74:     # 2. Espionamos a instância do fallback para garantir que seu método seja invocado
+  75:     with patch.object(fallback, 'calcular_dias', wraps=fallback.calcular_dias) as espiao_fallback:
+  76:
+  77:         # 3. Simulamos a falha de conexão HTTP (ConnectionError/Timeout)
+  78:         with patch("requests.post", side_effect=requests.exceptions.ConnectionError("Serviço indisponível")):
+  79:
+  80:             # 4. Executamos a chamada da política remota com o serviço indisponível
+  81:             dias_retornados = politica_remota.calcular_dias(usuario_id=1, livro_id=10)
+  82:
+  83:             # --- ASSERT 1: O valor retornado bate com a regra de negócio esperada (7) ---
+  84:             assert dias_retornados == 7, f"Esperado 7, mas veio {dias_retornados}"
+  85:
+  86:             # --- ASSERT 2 (Duplo): O valor é exatamente o mesmo retornado pela política local ---
+  87:             assert dias_retornados == resultado_esperado_local, (
+  88:                 f"Resultado ({dias_retornados}) difere do fallback local ({resultado_esperado_local})"
+  89:             )
+  90:
+  91:             # --- VERIFICAÇÃO RIGOROSA: Confirma que o fallback foi de fato executado ---
+  92:             espiao_fallback.assert_called_once_with(1, 10)
+  93:             print("Confirmado: O método calcular_dias do fallback foi realmente executado.")
+  94:
+  95:     print("Sucesso! O fallback foi totalmente provado por execução de código.")
+  96:
+  97:
+  98: if __name__ == "__main__":
+  99:     testar_integracao_caminho_feliz()
+ 100:     testar_integracao_fallback_indisponivel()
+PS C:\Git\emprestimos-biblioteca> # Algum teste usa PrazoComFilaDeReserva ou verifica o status da reserva depois do empréstimo?
+PS C:\Git\emprestimos-biblioteca> Get-ChildItem arquitetura\teste -Recurse -File -Include *.py |
+  Select-String -Pattern "PrazoComFilaDeReserva|ATENDIDA|status" |
+  ForEach-Object { "{0}:{1}: {2}" -f $_.Path.Replace("C:\Git\emprestimos-biblioteca\",""), $_.LineNumber, $_.Line.Trim() }
+arquitetura\teste\teste_integracao_prazo_remoto.py:10: from infraestrutura.politica_prazo_remota import PrazoComFilaDeReservaRemota
+arquitetura\teste\teste_integracao_prazo_remoto.py:11: from dominio.politica_prazo import PrazoComFilaDeReserva
+arquitetura\teste\teste_integracao_prazo_remoto.py:28: fallback = PrazoComFilaDeReserva(repo_reserva=repo_com_reserva)
+arquitetura\teste\teste_integracao_prazo_remoto.py:30: politica_remota = PrazoComFilaDeReservaRemota(
+arquitetura\teste\teste_integracao_prazo_remoto.py:42: fallback_sem = PrazoComFilaDeReserva(repo_reserva=repo_sem_reserva)
+arquitetura\teste\teste_integracao_prazo_remoto.py:44: politica_remota_sem = PrazoComFilaDeReservaRemota(
+arquitetura\teste\teste_integracao_prazo_remoto.py:62: fallback = PrazoComFilaDeReserva(repo_reserva=repo_com_reserva)
+arquitetura\teste\teste_integracao_prazo_remoto.py:68: politica_remota = PrazoComFilaDeReservaRemota(
+arquitetura\teste\test_criar_emprestimo.py:7: from dominio.exemplar import Exemplar, StatusExemplar
+arquitetura\teste\test_criar_emprestimo.py:8: from dominio.reserva import Reserva, StatusReserva
+arquitetura\teste\test_criar_emprestimo.py:60: # simula a alteração de status se necessário
+arquitetura\teste\test_criar_emprestimo.py:94: exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+arquitetura\teste\test_criar_emprestimo.py:104: exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+arquitetura\teste\test_criar_emprestimo.py:116: exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+arquitetura\teste\test_criar_emprestimo.py:125: exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+arquitetura\teste\test_criar_emprestimo.py:134: exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+arquitetura\teste\test_criar_emprestimo.py:140: status=StatusReserva.CANCELADA,
+arquitetura\teste\test_criar_emprestimo.py:144: with pytest.raises(ValueError, match="está com status"):
+arquitetura\teste\test_criar_emprestimo.py:148: def test_criar_emprestimo_com_reserva_ja_atendida_falha():
+arquitetura\teste\test_criar_emprestimo.py:149: exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+arquitetura\teste\test_criar_emprestimo.py:155: status=StatusReserva.ATENDIDA,
+arquitetura\teste\test_criar_emprestimo.py:159: with pytest.raises(ValueError, match="está com status"):
+arquitetura\teste\test_criar_emprestimo.py:164: exemplar = Exemplar(id=1, livro_id=10, status=StatusExemplar.ATIVO)
+PS C:\Git\emprestimos-biblioteca> Stop-Transcript
+**********************
+Fim da transcrição do Windows PowerShell
+Hora de término: 20261103182117
+**********************
+**********************
+Início da transcrição do Windows PowerShell
+Hora de início: 20261103190647
+Nome de Usuário: DESKTOP-G6SH7L9\julia
+Executar como Usuário: DESKTOP-G6SH7L9\julia
+Nome da Configuração: 
+Computador: DESKTOP-G6SH7L9 (Microsoft Windows NT 10.0.26300.0)
+Aplicativo Host: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+ID do Processo: 14856
+PSVersion: 5.1.26100.9818
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9818
+BuildVersion: 10.0.26100.9818
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Transcrição iniciada, o arquivo de saída é docs\diagnostico\evidencias\cenario-3\cenario-3-parte-2.txt
+PS C:\Git\emprestimos-biblioteca> git blame -L 39,54 -- arquitetura/aplicacao/criar_emprestimo.py
+ ExemplarIndisponivelError(
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 42)                 f
+"Exemplar {exemplar_id} não existe ou não está ATIVO."
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 43)             )
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 44)
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 45)         if self._
+repo_emprestimo.existe_emprestimo_ativo_para_exemplar(exemplar_id):
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 46)             raise
+ ExemplarIndisponivelError(
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 47)                 f
+"Exemplar {exemplar_id} já está emprestado."
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 48)             )
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 49)
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 50)         reserva =
+ None
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 51)         if reserv
+a_id is not None:
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 52)             reser
+va = self._repo_reserva.buscar_por_id(reserva_id)
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 53)             if re
+serva is None:
+^223dfc5 (Julia Gasparin 2026-08-12 12:52:32 -0300 54)                 r
+aise ValueError(f"Reserva {reserva_id} não encontrada.")
+PS C:\Git\emprestimos-biblioteca> git blame -L 13,27 -- arquitetura/aplicacao/devolver_exemplar.py
+
+PS C:\Git\emprestimos-biblioteca> Stop-Transcript
+**********************
+Fim da transcrição do Windows PowerShell
+Hora de término: 20261103190649
+**********************
